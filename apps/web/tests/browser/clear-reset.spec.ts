@@ -14,13 +14,12 @@ test('CLEAR confirmation keeps audio running, cancel retains it, and reset remov
   page,
 }) => {
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByText('Track 1 details', { exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const track = page.getByRole('region', {
     name: 'Track 1 · Loop',
     exact: true,
@@ -88,13 +87,12 @@ test('confirmation can be disabled and reenabled, and cleared One-shot can recor
   page,
 }) => {
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByText('Track 1 details', { exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await page
     .getByRole('combobox', { name: 'Track 1 playback mode' })
     .selectOption('OneShot');
@@ -110,6 +108,7 @@ test('confirmation can be disabled and reenabled, and cleared One-shot can recor
     .toBeGreaterThanOrEqual(24000);
   await track.getByRole('button', { name: 'Track STOP' }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Stopped');
+  await page.getByRole('tab', { name: 'Preferences' }).click();
   await page
     .getByRole('checkbox', { name: 'Confirm before clearing' })
     .uncheck();
@@ -133,10 +132,7 @@ test('actual worklet CLEAR keeps other audio and cycle while reset silences and 
   page,
 }) => {
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByText('Track 1 details', { exact: true }).click();
   const result = await page.evaluate(async () => {
     const rate = 48000,

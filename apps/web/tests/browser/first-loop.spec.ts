@@ -20,7 +20,9 @@ test('records and plays a first Loop through the real worklet with monitoring of
   const rec = track.getByRole('button', { name: /REC\/PLAY/ });
   await expect(rec).toBeDisabled();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(track.getByTestId('track-state')).toHaveText('Empty');
   await rec.click();
   await expect(track.getByTestId('track-state')).toHaveText('Recording');
@@ -48,7 +50,9 @@ test('records and plays a first Loop through the real worklet with monitoring of
   await page.getByRole('button', { name: 'Stop audio' }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Empty');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(rec).toBeEnabled();
   await expect(track.getByTestId('loop-length')).toHaveText('0');
 });

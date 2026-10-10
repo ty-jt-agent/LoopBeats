@@ -15,7 +15,9 @@ test('stopped mode controls preserve audio and active playback locks conversion'
 }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const mode = page.getByRole('combobox', { name: 'Track 1 playback mode' });
   await mode.selectOption('OneShot');
   const track = page
@@ -56,7 +58,9 @@ test('incompatible stopped One-shot disables Loop selection and explains the req
 }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const first = page.getByRole('region', {
     name: 'Track 1 · Loop',
     exact: true,

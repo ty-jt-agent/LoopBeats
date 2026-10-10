@@ -54,10 +54,12 @@ for (const viewport of [...visualViewports, { width: 640, height: 400 }]) {
       if (await summary.isVisible()) await summary.click();
     }
     expect(await overflow()).toBe(false);
+    await expect(page.getByText('Sample rate', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('tab', { name: 'Preferences' }).click();
     await expect(
       page.getByRole('checkbox', { name: 'Confirm before clearing' }),
     ).toBeVisible();
-    await expect(page.getByText('Sample rate', { exact: true })).toBeVisible();
     await assertTargets(page, viewport.width);
   });
 }
@@ -69,7 +71,9 @@ test('keyboard operates the performance, settings and removal workflows at zoom-
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const stopAudio = page.getByRole('button', { name: 'Stop audio' });
   await stopAudio.focus();
   await page.keyboard.press('Tab');
@@ -151,16 +155,19 @@ test('keyboard operates the performance, settings and removal workflows at zoom-
   const clear = first.getByRole('button', { name: 'CLEAR', exact: true });
   await expect(clear).toBeFocused();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(
+    page.getByRole('dialog', { name: 'Clear Track 1?' }),
+  ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Cancel', exact: true }),
   ).toBeFocused();
   await assertTargets(page, 640);
   await page.keyboard.press('Escape');
   await expect(clear).toBeFocused();
-  const settings = page.locator('summary').filter({ hasText: /^Settings$/ });
+  const settings = page.getByRole('button', { name: 'Settings', exact: true });
   await settings.focus();
   await page.keyboard.press('Space');
+  await page.getByRole('tab', { name: 'Preferences' }).click();
   const preference = page.getByRole('checkbox', {
     name: 'Confirm before clearing',
   });
@@ -168,6 +175,7 @@ test('keyboard operates the performance, settings and removal workflows at zoom-
   await page.keyboard.press('Space');
   await expect(preference).not.toBeChecked();
   await page.keyboard.press('Space');
+  await page.getByRole('tab', { name: 'Session', exact: true }).click();
   const reset = page.getByRole('button', {
     name: 'Reset session',
     exact: true,
@@ -189,7 +197,10 @@ test('keyboard operates the performance, settings and removal workflows at zoom-
   ).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(first.getByTestId('track-state')).toHaveText('Empty');
-  await expect(settings).toBeFocused();
+  await expect(
+    page.getByRole('tab', { name: 'Session', exact: true }),
+  ).toBeFocused();
+  await page.getByRole('button', { name: 'Close Settings' }).click();
   const diagnostics = page
     .locator('summary')
     .filter({ hasText: /^Diagnostics$/ });
@@ -238,10 +249,7 @@ for (const state of [
       trackFixture(state),
       trackFixture('Playing', true),
     ]);
-    await page
-      .locator('summary')
-      .filter({ hasText: /^Settings$/ })
-      .click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const primary = page.getByRole('button', { name: /Track 1 REC\/PLAY/ });
     await primary.focus();
     await page.keyboard.press('Tab');

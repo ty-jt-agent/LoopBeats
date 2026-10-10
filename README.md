@@ -102,6 +102,13 @@ Vendored Matt Pocock skills are MIT licensed, pinned and attributed in `.agents/
 
 ## Completed session export (#50)
 
+Settings now opens a side panel on desktop and a full-screen panel on narrow
+screens. Choose Session for ZIP/recovery/reset, Audio for input selection, or
+Preferences for Confirm before clearing. Opening or closing Settings leaves audio
+and transfers running; View progress returns to an ongoing transfer. Preferences
+apply immediately and report browser-save failures with a retry. See
+[the #63 verification record](docs/testing/settings-ui-63.md).
+
 Open **Settings** and choose **Export session** while audio is ready. The ZIP
 contains a versioned session manifest and mono float32 WAVs for completed
 recordings, preserving raw audio, modes, gain/mute, master gain and shared-cycle

@@ -15,7 +15,9 @@ test('One-shot controls retrigger, stop globally without a Loop transport, and r
 }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const mode = page.getByRole('combobox', { name: 'Track 1 playback mode' });
   await mode.selectOption('OneShot');
   const track = page.getByRole('region', {

@@ -56,10 +56,56 @@ test.beforeEach(async ({ page }) => {
     };
   });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
+});
+
+test('retry after failed input persistence retains the acknowledged device', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
+  await page.evaluate(() => {
+    const write = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'loopbeats.settings.v1')
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      return write.call(this, key, value);
+    };
+    window.addEventListener('allow-settings-write', () => {
+      Storage.prototype.setItem = write;
+    });
+  });
+  await page.getByRole('combobox', { name: 'Audio input' }).selectOption('usb');
+  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
+    'usb',
+  );
+  await page.getByRole('tab', { name: 'Preferences' }).click();
   await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+    .getByRole('checkbox', { name: 'Confirm before clearing' })
+    .uncheck();
+  await expect(
+    page.getByText('Applied for this visit; could not save in this browser.'),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('allow-settings-write')),
+  );
+  await expect(
+    page.getByText('Saved in this browser.', { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
+    'usb',
+  );
+  await page.getByRole('tab', { name: 'Preferences' }).click();
+  await expect(
+    page.getByRole('checkbox', { name: 'Confirm before clearing' }),
+  ).not.toBeChecked();
 });
 
 test('successful selection retains Loop and cycle, saves preference, and restores after reload', async ({
@@ -98,10 +144,8 @@ test('successful selection retains Loop and cycle, saves preference, and restore
   await expect(track.getByTestId('track-state')).toHaveText('Playing');
   await page.getByRole('button', { name: 'Stop audio' }).click();
   await page.reload();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
   await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
     'usb',
@@ -118,10 +162,8 @@ test('unavailable persisted input falls back and displays actual device', async 
   );
   await page.getByRole('button', { name: 'Stop audio' }).click();
   await page.reload();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.evaluate(() => {
     (
       window as unknown as { inputFixture: { missing: boolean } }

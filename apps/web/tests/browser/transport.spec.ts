@@ -33,7 +33,9 @@ test('track STOP retains a silent capture and global STOP resets the timeline wi
     track.getByRole('button', { name: 'Track STOP', exact: true }),
   ).toBeDisabled();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(track.getByTestId('capture-remaining')).toHaveText('60.0 s');
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Recording');
@@ -81,7 +83,9 @@ test('global STOP discards unfinished first capture and permits a new recording'
     exact: true,
   });
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(track.getByTestId('loop-length')).not.toHaveText('0');
   await page.getByRole('button', { name: 'Global STOP', exact: true }).click();
@@ -100,7 +104,9 @@ test('clearing the last Loop keeps REC available and idle Global STOP cannot str
   await page.goto('/');
   const track = page.getByRole('region', { name: /Track 1/ });
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(track.getByTestId('loop-length')).not.toHaveText('0');
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
@@ -117,7 +123,9 @@ test('clearing the last Loop keeps REC available and idle Global STOP cannot str
   ).toBeDisabled();
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Recording');
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
 });
 
 for (const mode of ['Loop', 'OneShot']) {
@@ -128,7 +136,9 @@ for (const mode of ['Loop', 'OneShot']) {
     const first = page.getByRole('region', { name: /Track 1/ });
     const second = page.getByRole('region', { name: /Track 2/ });
     await page.getByRole('button', { name: 'Start audio' }).click();
-    await expect(page.getByRole('status')).toContainText('Audio ready');
+    await expect(
+      page.getByRole('status', { name: 'Audio status' }),
+    ).toContainText('Audio ready');
     await second.getByRole('combobox').selectOption(mode);
     await first.getByRole('button', { name: /REC\/PLAY/ }).click();
     await expect
@@ -157,7 +167,9 @@ for (const mode of ['Loop', 'OneShot']) {
       .click();
     await expect(first.getByTestId('track-state')).toHaveText('Playing');
     await expect(second.getByTestId('track-state')).toHaveText('Playing');
-    await expect(page.getByRole('status')).toContainText('Audio ready');
+    await expect(
+      page.getByRole('status', { name: 'Audio status' }),
+    ).toContainText('Audio ready');
     if (mode === 'OneShot') {
       await expect(second.getByTestId('track-state')).toHaveText('Stopped');
       await expect(first.getByTestId('track-state')).toHaveText('Playing');

@@ -5,16 +5,25 @@ export function SessionExport({
   client,
   enabled,
   onBusy,
+  onStatus,
 }: {
   client: AudioClient;
   enabled: boolean;
   onBusy?: (busy: boolean) => void;
+  onStatus?: (status: string) => void;
 }) {
   const operation = useRef<AbortController | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   useEffect(() => () => operation.current?.abort(), []);
+  useEffect(() => {
+    onStatus?.(
+      progress !== null
+        ? `Exporting session: ${Math.round(progress * 100)}%`
+        : error || message,
+    );
+  }, [progress, error, message, onStatus]);
   const start = async () => {
     const controller = new AbortController();
     operation.current = controller;

@@ -14,10 +14,7 @@ test('downloads a standard ZIP of completed audio while another track is recordi
   page,
 }, testInfo) => {
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const exportButton = page.getByRole('button', {
     name: 'Export session',
     exact: true,
@@ -165,10 +162,7 @@ test('allocation failure leaves the live session intact and export can be retrie
   await rec.click();
   await page.waitForTimeout(200);
   await rec.click();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('button', { name: 'Export session', exact: true })
     .click();
@@ -306,10 +300,7 @@ test('a throwing browser port cannot prevent cancellation or a later export', as
   await rec.click();
   await page.waitForTimeout(200);
   await rec.click();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const exporting = page.getByRole('button', {
     name: 'Export session',
     exact: true,
