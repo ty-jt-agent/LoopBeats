@@ -16,10 +16,11 @@ test('downloads a standard ZIP of completed audio while another track is recordi
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const exportButton = page.getByRole('button', {
-    name: 'Export session',
+    name: 'Save ZIP',
     exact: true,
   });
   await expect(exportButton).toBeDisabled();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
   const tracks = page.locator('.track-strip');
   await expect(
@@ -45,6 +46,13 @@ test('downloads a standard ZIP of completed audio while another track is recordi
   await expect(tracks.nth(1).getByTestId('track-state')).toHaveText(
     'Recording',
   );
+  await expect(exportButton).toBeEnabled();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeDisabled();
+  await expect(
+    page.getByText('Finish or stop recording before loading a session.', {
+      exact: true,
+    }),
+  ).toBeVisible();
   const downloading = page.waitForEvent('download');
   const started = Date.now();
   await exportButton.click();
@@ -136,6 +144,12 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     'Overdubbing',
   );
   await expect(exportButton).toBeDisabled();
+  await expect(
+    page.getByText('Finish or stop overdubbing before using session files.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeDisabled();
 });
 
 test('allocation failure leaves the live session intact and export can be retried', async ({
@@ -163,16 +177,12 @@ test('allocation failure leaves the live session intact and export can be retrie
   await page.waitForTimeout(200);
   await rec.click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('Not enough memory');
   await expect(track.getByTestId('track-state')).toHaveText('Playing');
   await page.evaluate(() => window.dispatchEvent(new Event('restore-blob')));
   const download = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   await download;
   await expect(track.getByTestId('track-state')).toHaveText('Playing');
 });
@@ -302,7 +312,7 @@ test('a throwing browser port cannot prevent cancellation or a later export', as
   await rec.click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const exporting = page.getByRole('button', {
-    name: 'Export session',
+    name: 'Save ZIP',
     exact: true,
   });
   await exporting.click();

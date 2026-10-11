@@ -109,7 +109,7 @@ and transfers running; View progress returns to an ongoing transfer. Preferences
 apply immediately and report browser-save failures with a retry. See
 [the #63 verification record](docs/testing/settings-ui-63.md).
 
-Open **Settings** and choose **Export session** while audio is ready. The ZIP
+Open **Settings** and choose **Save ZIP** while audio is ready. The ZIP
 contains a versioned session manifest and mono float32 WAVs for completed
 recordings, preserving raw audio, modes, gain/mute, master gain and shared-cycle
 alignment. Unfinished initial recordings are excluded; finish overdub before
@@ -118,7 +118,7 @@ unchanged. See [the export contract](docs/specs/session-export-50.md).
 
 ## Session import (#51, #52)
 
-Start audio, finish any recording/overdub, then select **Import session** in
+Start audio, finish any recording/overdub, then select **Load ZIP** in
 Settings and choose an exported session ZIP. The complete archive is validated
 before replacement. When current recordings exist, **Replace current session?**
 defaults to Cancel. You can cancel validation or transfer; live playback can

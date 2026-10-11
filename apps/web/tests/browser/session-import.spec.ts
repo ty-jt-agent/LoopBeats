@@ -106,7 +106,7 @@ test('hidden import continues and reopens Session for confirmation without closi
   await expect(track.getByTestId('track-state')).toHaveText('Playing');
   const length = await track.getByTestId('loop-length').textContent();
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await archive());
   await page.getByRole('tab', { name: 'Preferences' }).click();
   await page.getByRole('button', { name: 'Close Settings' }).click();
@@ -152,7 +152,7 @@ test('imports maximum two-track capacity through AudioClient at 192 kHz', async 
   await start(page);
   const file = testInfo.outputPath('maximum-session.zip');
   await writeFile(file, (await archive(192000, 11520000)).buffer);
-  await page.getByLabel('Import session', { exact: true }).setInputFiles(file);
+  await page.getByLabel('Load ZIP', { exact: true }).setInputFiles(file);
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
   ).toBeVisible({ timeout: 60000 });
@@ -189,7 +189,7 @@ test('canceling staging and changing the session before confirmation leave recor
     });
   });
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -235,7 +235,7 @@ test('imports both tracks stopped with metadata, cancel retains them, replacemen
   page,
 }) => {
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -276,7 +276,7 @@ test('invalid and different-rate files preserve the current recording', async ({
   page,
 }) => {
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -333,7 +333,7 @@ test('allocation and browser transfer failures preserve tracks and allow retry',
     });
   });
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await expect(page.getByRole('alert')).toContainText('Not enough memory');
   await expect(
@@ -383,16 +383,14 @@ test('AudioClient export/import round trip preserves both raw recordings and set
     ) as ArrayBuffer,
     48000,
   );
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(original);
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
   ).toBeVisible();
   for (let pass = 0; pass < 2; pass++) {
     const downloading = page.waitForEvent('download');
-    await page
-      .getByRole('button', { name: 'Export session', exact: true })
-      .click();
+    await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
     const download = await downloading;
     const path = testInfo.outputPath(`roundtrip-${pass}.zip`);
     await download.saveAs(path);
@@ -435,7 +433,7 @@ test('interruption closes replacement confirmation and releases the import opera
     };
   });
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -588,7 +586,7 @@ test('oversized file is rejected before reading or transferring audio', async ({
     await file.close();
   }
   await start(page);
-  await page.getByLabel('Import session', { exact: true }).setInputFiles(path);
+  await page.getByLabel('Load ZIP', { exact: true }).setInputFiles(path);
   await expect(page.getByRole('alert')).toContainText('exceeds 96 MiB');
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('track-state'),
@@ -617,7 +615,7 @@ test('timed-out staging releases the operation and permits retry', async ({
   });
   await start(page);
   await page.clock.install();
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await expect
     .poll(async () => {
@@ -669,7 +667,7 @@ test('Stop audio during commit dispatch settles import without stale success', a
   await start(page);
   await page.evaluate(() => window.dispatchEvent(new Event('teardown-import')));
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await archive());
   await expect(
     page.getByRole('alert').filter({ hasText: 'Import canceled.' }),
@@ -697,7 +695,7 @@ test('canceling an unanswered file read releases import immediately', async ({
     });
   });
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await archive());
   await page
     .getByRole('button', { name: 'Cancel import', exact: true })
