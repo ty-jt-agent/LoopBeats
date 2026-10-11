@@ -8,10 +8,10 @@ import {
 } from 'react';
 import type { TrackId } from '@loopbeats/domain';
 import { AudioClient } from '@loopbeats/audio-client';
+import { recoveryDeletionNotice } from './recovery-deletion-notice';
 import { TrackStrip } from './TrackStrip';
 import { SessionExport } from './SessionExport';
 import { SessionImport } from './SessionImport';
-import { recoveryDeletionNotice } from './recovery-deletion-notice';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
@@ -129,12 +129,12 @@ export function App() {
     () => storedSettings?.preferredInputId ?? '',
   );
   const [switchPending, setSwitchPending] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [removalError, setRemovalError] = useState('');
-  const [failedRemoval, setFailedRemoval] = useState<Removal | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
   const removalTrigger = useRef<HTMLElement | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removalError, setRemovalError] = useState('');
+  const [failedRemoval, setFailedRemoval] = useState<Removal | null>(null);
   useEffect(() => {
     if (!pendingRemoval) return;
     const dialog = confirmation.current;
