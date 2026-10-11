@@ -60,7 +60,31 @@ _Avoid_: Stopped, paused.
 
 **Session reset**: Clear every track and reset the shared cycle and transport.
 
-**Input monitoring**: Listening to live input through the application's output.
+**Input monitoring**: Listening to live input after Input FX through the application's output. Turning monitoring off does not disable capture or Input FX.
+
+**Input FX**: Shared effects applied to incoming audio before capture. Their sound becomes part of newly recorded audio and overdub additions.
+
+**Track FX**: Effects applied to an individual track's playback without changing its stored recording.
+
+**Master FX**: Effects applied to the mix of track playback and monitored input without changing stored recordings.
+
+**Baked effect**: An effect whose sound is part of a recording and remains when that effect is later bypassed.
+
+**Low-pass filter**: An effect that reduces high-frequency content above its cutoff while retaining lower-frequency content.
+
+**Cutoff**: The frequency around which a low-pass filter begins attenuating higher-frequency sound, expressed in hertz.
+
+**FX bypass**: Hearing an effect's dry input instead of its processed output while retaining the effect configuration. Bypass does not undo effects already baked into a recording.
+
+**FX scope**: The part of a session affected by an effect: incoming input, one track's playback, or the final mix.
+
+**FX slot**: A place within an FX scope holding one effect or no effect.
+
+**FX configuration**: The effect selection, bypass state and sound parameters belonging to a session's FX slots.
+
+**FX history**: The transient sound state accumulated by an effect as it processes audio, distinct from its configuration and stored recordings.
+
+**FX tail**: Sound an effect continues producing from its history after its source stops contributing new audio.
 
 **Playback mode**: A track's selection of Loop or One-shot playback.
 
@@ -68,9 +92,9 @@ _Avoid_: Stopped, paused.
 
 **Armed**: Waiting for a scheduled boundary before an operation starts; later scheduling vocabulary.
 
-**Track gain**: A linear playback multiplier for one track, independent of captured audio and mute.
+**Track gain**: A linear multiplier on one track's playback after Track FX, including its effect tails, independent of captured audio and mute.
 
-**Master gain**: A linear multiplier on the summed track and monitoring output before clipping protection.
+**Master gain**: A linear multiplier on the final output after Master FX, including monitored input and effect tails, before clipping protection.
 
 **Session file**: A portable saved representation of a session, containing completed track recordings and the session settings needed to continue working with them.
 _Avoid_: Project file, saved settings
