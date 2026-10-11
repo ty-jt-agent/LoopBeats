@@ -20,6 +20,9 @@ export type RecoveryRecord = {
   progress?: CheckpointInfo;
 };
 export type RecoveryState = {
+  /** Observations of existing read and ownership barriers, not new policy. */
+  savingPaused?: boolean;
+  available?: boolean;
   status: string;
   owner: boolean;
   offer: Pick<RecoveryRecord, 'savedAt' | 'revision' | 'progress'> | null;
@@ -190,7 +193,12 @@ export class SessionRecovery {
   ) {}
   getSnapshot = () => this.state;
   private publish(update: Partial<RecoveryState>) {
-    this.state = { ...this.state, ...update };
+    this.state = {
+      ...this.state,
+      ...update,
+      savingPaused: this.unresolved,
+      available: !this.disabled,
+    };
     this.host.notify();
   }
   async initialize(): Promise<void> {
