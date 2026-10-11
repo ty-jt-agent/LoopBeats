@@ -686,7 +686,11 @@ export function App() {
                   {snapshot.error}{' '}
                   {ready
                     ? 'The acknowledged input is shown; retry selection when playback and capture are stopped.'
-                    : 'Use Start audio to retry after resolving this failure.'}
+                    : snapshot.status === 'interrupted'
+                      ? 'Use Reinitialize audio to retry with retained recordings.'
+                      : snapshot.status === 'recovering'
+                        ? 'Reinitializing audio; wait for the result.'
+                        : 'Use Start audio to retry after resolving this failure.'}
                 </p>
               )}
               {preferenceSave === 'failed' && (
