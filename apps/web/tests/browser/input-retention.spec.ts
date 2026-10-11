@@ -78,10 +78,12 @@ test('retry after failed input persistence retains the acknowledged device', asy
       Storage.prototype.setItem = write;
     });
   });
-  await page.getByRole('combobox', { name: 'Audio input' }).selectOption('usb');
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await page
+    .getByRole('combobox', { name: 'Input device' })
+    .selectOption('usb');
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
   await page.getByRole('tab', { name: 'Preferences' }).click();
   await page
     .getByRole('checkbox', { name: 'Confirm before clearing' })
@@ -99,9 +101,9 @@ test('retry after failed input persistence retains the acknowledged device', asy
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
   await page.getByRole('tab', { name: 'Preferences' }).click();
   await expect(
     page.getByRole('checkbox', { name: 'Confirm before clearing' }),
@@ -124,10 +126,12 @@ test('successful selection retains Loop and cycle, saves preference, and restore
   const length = await track.getByTestId('loop-length').textContent();
   await page.getByRole('button', { name: 'Global STOP' }).click();
   await expect(page.getByTestId('transport-state')).toHaveText('Stopped');
-  await page.getByRole('combobox', { name: 'Audio input' }).selectOption('usb');
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await page
+    .getByRole('combobox', { name: 'Input device' })
+    .selectOption('usb');
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
   await expect(track.getByTestId('loop-length')).toHaveText(length!);
   await expect(page.getByTestId('cycle-length')).toHaveText(length!);
   await expect(page.getByTestId('transport-position')).toHaveText('0');
@@ -147,19 +151,21 @@ test('successful selection retains Loop and cycle, saves preference, and restore
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
 });
 
 test('unavailable persisted input falls back and displays actual device', async ({
   page,
 }) => {
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await page.getByRole('combobox', { name: 'Audio input' }).selectOption('usb');
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await page
+    .getByRole('combobox', { name: 'Input device' })
+    .selectOption('usb');
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
   await page.getByRole('button', { name: 'Stop audio' }).click();
   await page.reload();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -170,9 +176,9 @@ test('unavailable persisted input falls back and displays actual device', async 
     ).inputFixture.missing = true;
   });
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'default',
-  );
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('default');
   await expect(
     page.getByText(
       'Preferred input is unavailable; using the system-selected input.',
@@ -187,7 +193,9 @@ test('Stop audio releases a late replacement stream', async ({ page }) => {
       window as unknown as { inputFixture: { delay: boolean } }
     ).inputFixture.delay = true;
   });
-  await page.getByRole('combobox', { name: 'Audio input' }).selectOption('usb');
+  await page
+    .getByRole('combobox', { name: 'Input device' })
+    .selectOption('usb');
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -221,10 +229,12 @@ test('replacement mute interrupts, recovery keeps device identity, and another s
   page,
 }) => {
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await page.getByRole('combobox', { name: 'Audio input' }).selectOption('usb');
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await page
+    .getByRole('combobox', { name: 'Input device' })
+    .selectOption('usb');
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
   await page.evaluate(() => {
     (
       window as unknown as { inputFixture: { current: MediaStream } }
@@ -236,13 +246,13 @@ test('replacement mute interrupts, recovery keeps device identity, and another s
     page.getByRole('button', { name: 'Reinitialize audio' }),
   ).toBeEnabled();
   await page.getByRole('button', { name: 'Reinitialize audio' }).click();
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'usb',
-  );
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('usb');
   await page
-    .getByRole('combobox', { name: 'Audio input' })
+    .getByRole('combobox', { name: 'Input device' })
     .selectOption('default');
-  await expect(page.getByRole('combobox', { name: 'Audio input' })).toHaveValue(
-    'default',
-  );
+  await expect(
+    page.getByRole('combobox', { name: 'Input device' }),
+  ).toHaveValue('default');
 });
