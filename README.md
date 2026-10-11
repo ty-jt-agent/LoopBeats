@@ -138,10 +138,10 @@ Completed recordings and session configuration are checkpointed automatically
 in this browser. Changes coalesce for one second, with a five-second scheduling
 target when eligible. Playback continues; active overdub postpones saving until
 it finishes, and unfinished initial capture is excluded. The last successful
-snapshot survives a failed write. Recovery status and the saved time are visible.
+snapshot survives a failed write. Compact Recovery status and the last successful save are visible in **Settings > Session**; open **Recovery details** for checkpoint timing and browser-storage limitations.
 
 After reload, review the recovery offer and explicitly **Start audio** and
-**Recover session** to restore Stopped tracks at transport zero with monitoring
+**Recover** to restore Stopped tracks at transport zero with monitoring
 off. Rate conversion and replacement use the usual confirmations. **Later**
 retains the offer under Settings and pauses saving until recovery or explicit
 discard. One tab owns recovery; other tabs can use live audio without overwriting

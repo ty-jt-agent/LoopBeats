@@ -11,6 +11,7 @@ import { AudioClient } from '@loopbeats/audio-client';
 import { TrackStrip } from './TrackStrip';
 import { SessionExport } from './SessionExport';
 import { SessionImport } from './SessionImport';
+import { recoveryPresentation } from './recovery-presentation';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
@@ -353,7 +354,8 @@ export function App() {
                 {status}
               </p>
               <p className="session-guidance" aria-live="polite">
-                Recovery: {recovery.status} {recovery.error}
+                Recovery: {recoveryPresentation(recovery).summary}{' '}
+                {recovery.error}
               </p>
               {snapshot.error && <p role="alert">{snapshot.error}</p>}
               <p className="session-guidance">
