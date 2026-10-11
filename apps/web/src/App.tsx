@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -104,12 +105,16 @@ export function App() {
   const closeSettings = () => {
     if (document.querySelector('dialog[open]')) return;
     setSettingsOpen(false);
-    requestAnimationFrame(() => {
+  };
+  const previouslyOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (previouslyOpen.current && !settingsOpen) {
       const opener = settingsOpener.current;
       if (opener?.isConnected) opener.focus();
       if (document.activeElement !== opener) settingsTrigger.current?.focus();
-    });
-  };
+    }
+    previouslyOpen.current = settingsOpen;
+  }, [settingsOpen]);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [storedSettings] = useState(readSettings);
   const lastMix = useRef<Pick<StoredSettings, 'masterGain' | 'tracks'>>(
