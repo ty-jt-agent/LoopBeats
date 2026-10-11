@@ -83,10 +83,7 @@ async function start(page: Page) {
       .nth(0)
       .getByRole('button', { name: /REC\/PLAY/ }),
   ).toBeEnabled();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
 }
 const conversionDialog = (page: Page) =>
   page.getByRole('dialog', { name: 'Convert sample rate?' });

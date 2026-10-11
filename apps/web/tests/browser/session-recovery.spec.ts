@@ -52,10 +52,7 @@ async function knownSession(length = 3) {
 async function ready(page: import('@playwright/test').Page) {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(
     page.getByLabel('Import session', { exact: true }),
   ).toBeEnabled();
@@ -68,6 +65,7 @@ async function saved(page: import('@playwright/test').Page) {
 async function reloadOffer(page: import('@playwright/test').Page) {
   page.on('dialog', (dialog) => dialog.accept());
   await page.reload();
+  await page.getByRole('button', { name: 'View recovery' }).click();
   await expect(
     page.getByRole('button', { name: 'Recover session', exact: true }),
   ).toBeVisible();
@@ -265,10 +263,7 @@ test('Stop audio discard deletes recovery while ordinary reload retains it', asy
     page.locator('.track-strip').nth(0).getByTestId('track-state'),
   ).toHaveText('Empty');
   await page.reload();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByTestId('recovery-status')).toContainText(
     'No recovery snapshot',
   );
@@ -372,15 +367,13 @@ test('completed recording is offered after reload and recovered only on request'
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Playing');
   const length = await track.getByTestId('loop-length').textContent();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByTestId('recovery-status')).toContainText('Saved at', {
     timeout: 15000,
   });
   page.on('dialog', (dialog) => dialog.accept());
   await page.reload();
+  await page.getByRole('button', { name: 'View recovery' }).click();
   await expect(
     page.getByRole('button', { name: 'Recover session', exact: true }),
   ).toBeVisible();
@@ -628,10 +621,7 @@ test('recovery discard defaults to Cancel and explicitly removes an unsupported 
     });
   });
   await page.reload();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('unsupported recovery');
   await page
     .getByRole('button', { name: 'Discard recovery', exact: true })
@@ -698,10 +688,7 @@ for (const invalid of [
       });
     }, invalid);
     await page.reload();
-    await page
-      .locator('summary')
-      .filter({ hasText: /^Settings$/ })
-      .click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('unsupported recovery');
     await expect(
       page.getByRole('button', { name: 'Recover session', exact: true }),

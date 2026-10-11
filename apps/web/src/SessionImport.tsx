@@ -9,14 +9,21 @@ export function SessionImport({
   client,
   enabled,
   onBusy,
+  onStatus,
+  onConfirmation,
+  onRestoreFocus,
 }: {
   client: AudioClient;
   enabled: boolean;
   onBusy: (busy: boolean) => void;
+  onStatus?: (status: string) => void;
+  onConfirmation?: () => void;
+  onRestoreFocus?: () => void;
 }) {
   const operation = useRef<AbortController | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const answer = useRef<((confirmed: boolean) => void) | null>(null);
+  const confirmationTrigger = useRef<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [committing, setCommitting] = useState(false);
@@ -30,13 +37,28 @@ export function SessionImport({
   const setLater = (deferred: boolean) => client.showRecoveryOffer(!deferred);
   useEffect(() => () => operation.current?.abort(), []);
   useEffect(() => {
+    onStatus?.(
+      progress !== null
+        ? committing
+          ? 'Finishing load…'
+          : `Loading session: ${Math.round(progress * 100)}%`
+        : error || message,
+    );
+  }, [progress, committing, error, message, onStatus]);
+  useEffect(() => {
     if (confirming) {
       dialog.current?.showModal();
       dialog.current?.querySelector<HTMLButtonElement>('button')?.focus();
-    } else if (dialog.current?.open) dialog.current.close();
-  }, [confirming]);
+    } else if (dialog.current?.open) {
+      dialog.current.close();
+      const trigger = confirmationTrigger.current;
+      trigger?.focus();
+      if (!trigger || document.activeElement !== trigger) onRestoreFocus?.();
+    }
+  }, [confirming, onRestoreFocus]);
   const start = async (file?: File, discard = false) => {
     const controller = new AbortController();
+    confirmationTrigger.current = document.activeElement as HTMLElement | null;
     operation.current = controller;
     onBusy(true);
     setProgress(0);
@@ -55,7 +77,10 @@ export function SessionImport({
         answer.current = finish;
         signal.addEventListener('abort', abort, { once: true });
         if (signal.aborted) finish(false);
-        else setConfirming(details);
+        else {
+          onConfirmation?.();
+          setConfirming(details);
+        }
       });
     try {
       if (discard) {
@@ -104,12 +129,7 @@ export function SessionImport({
   };
   return (
     <section aria-labelledby="import-heading">
-      <section
-        aria-labelledby="recovery-heading"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') setLater(true);
-        }}
-      >
+      <section aria-labelledby="recovery-heading">
         <h2 id="recovery-heading">Session recovery</h2>
         <p data-testid="recovery-status">{recovery.status}</p>
         {recovery.savedAt !== null && (
@@ -220,7 +240,11 @@ export function SessionImport({
         aria-labelledby="import-confirm-heading"
         onCancel={(event) => {
           event.preventDefault();
+          event.stopPropagation();
           answer.current?.(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') event.stopPropagation();
         }}
       >
         <h2 id="import-confirm-heading">

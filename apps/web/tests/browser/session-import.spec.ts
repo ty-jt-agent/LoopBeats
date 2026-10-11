@@ -77,11 +77,65 @@ async function start(page: Page) {
       .nth(0)
       .getByRole('button', { name: /REC\/PLAY/ }),
   ).toBeEnabled();
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
 }
+
+test('hidden import continues and reopens Session for confirmation without closing Settings on Escape', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const read = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = async function () {
+      await new Promise<void>((resolve) =>
+        window.addEventListener('continue-file-read', () => resolve(), {
+          once: true,
+        }),
+      );
+      return read.call(this);
+    };
+  });
+  await start(page);
+  const track = page.locator('.track-strip').first();
+  await track.getByRole('button', { name: /REC\/PLAY/ }).click();
+  await expect
+    .poll(async () =>
+      Number(await track.getByTestId('captured-samples').textContent()),
+    )
+    .toBeGreaterThan(12000);
+  await track.getByRole('button', { name: /REC\/PLAY/ }).click();
+  await expect(track.getByTestId('track-state')).toHaveText('Playing');
+  const length = await track.getByTestId('loop-length').textContent();
+  await page
+    .getByLabel('Import session', { exact: true })
+    .setInputFiles(await archive());
+  await page.getByRole('tab', { name: 'Preferences' }).click();
+  await page.getByRole('button', { name: 'Close Settings' }).click();
+  await expect(
+    page.getByRole('button', { name: 'View progress' }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('continue-file-read')),
+  );
+  const confirmation = page.getByRole('dialog', {
+    name: 'Replace current session?',
+  });
+  await expect(confirmation).toBeVisible();
+  await expect(
+    confirmation.getByRole('button', { name: 'Cancel', exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(confirmation).not.toBeVisible();
+  await expect(
+    page.getByRole('dialog', { name: 'Settings', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('tab', { name: 'Session', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('button', { name: 'Close Settings' }).click();
+  await expect(track.getByTestId('loop-length')).toHaveText(length!);
+  await expect(track.getByTestId('track-state')).toHaveText('Playing');
+});
 
 test('imports maximum two-track capacity through AudioClient at 192 kHz', async ({
   page,

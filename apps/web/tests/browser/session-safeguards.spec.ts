@@ -39,21 +39,25 @@ for (const viewport of visualViewports) {
         status,
       );
       if (scene === 'settings' || scene === 'reset-dialog') {
-        const settings = page
-          .locator('summary')
-          .filter({ hasText: /^Settings$/ });
+        const settings = page.getByRole('button', {
+          name: 'Settings',
+          exact: true,
+        });
         await settings.focus();
         await page.keyboard.press('Enter');
+        await page.getByRole('tab', { name: 'Preferences' }).click();
         await expect(
-          page.getByRole('region', { name: 'Settings' }).getByRole('checkbox'),
+          page.getByRole('checkbox', { name: 'Confirm before clearing' }),
         ).toBeVisible();
         await expect(
           page.getByText('Sample rate', { exact: true }),
         ).not.toBeVisible();
-        if (scene === 'reset-dialog')
+        if (scene === 'reset-dialog') {
+          await page.getByRole('tab', { name: 'Session', exact: true }).click();
           await page
             .getByRole('button', { name: 'Reset session', exact: true })
             .click();
+        }
       }
       if (scene === 'clear-dialog') {
         await page.getByText('Track 1 details', { exact: true }).click();
@@ -69,11 +73,21 @@ for (const viewport of visualViewports) {
         ).toBeVisible();
       }
       if (scene.endsWith('dialog')) {
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(
+          page.getByRole('dialog', {
+            name:
+              scene === 'reset-dialog' ? 'Reset session?' : 'Clear Track 1?',
+          }),
+        ).toBeVisible();
         await expect(
           page.getByRole('button', { name: 'Cancel', exact: true }),
         ).toBeFocused();
-        const box = (await page.getByRole('dialog').boundingBox())!;
+        const box = (await page
+          .getByRole('dialog', {
+            name:
+              scene === 'reset-dialog' ? 'Reset session?' : 'Clear Track 1?',
+          })
+          .boundingBox())!;
         expect(box.x).toBeGreaterThanOrEqual(0);
         expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
         expect(box.y).toBeGreaterThanOrEqual(0);
@@ -106,7 +120,9 @@ for (const viewport of visualViewports) {
       const path = testInfo.outputPath(`${viewport.name}-${scene}.png`);
       await page.screenshot({
         path,
-        fullPage: !scene.endsWith('dialog'),
+        fullPage:
+          !scene.endsWith('dialog') &&
+          !(scene === 'settings' && viewport.width < 1024),
         animations: 'disabled',
       });
       await testInfo.attach(`${viewport.name}-${scene}`, {

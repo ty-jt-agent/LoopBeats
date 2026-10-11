@@ -36,12 +36,12 @@ test('shows input selection and gates switching during capture', async ({
     ];
   });
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const input = page.getByRole('combobox', { name: 'Audio input' });
   await expect(input).toBeVisible();
   await expect(input).toHaveValue('default');
@@ -97,12 +97,12 @@ test('reports a rejected switch and keeps the previous input selected', async ({
     };
   });
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const input = page.getByRole('combobox', { name: 'Audio input' });
   await input.selectOption('usb');
   await expect(page.getByRole('alert')).toContainText('could not be opened');
@@ -167,12 +167,12 @@ test('does not replace input when recording begins during a delayed switch', asy
     };
   });
   await page.goto('/');
-  await page
-    .locator('summary')
-    .filter({ hasText: /^Settings$/ })
-    .click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const input = page.getByRole('combobox', { name: 'Audio input' });
   await input.selectOption('usb');
   await expect(

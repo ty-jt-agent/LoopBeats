@@ -175,7 +175,8 @@ test('a pending input switch gates the combined action until switching completes
       }),
   );
   render(<App />);
-  fireEvent.click(screen.getByText('Settings', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Audio' }));
   const selector = await screen.findByRole('combobox', { name: 'Audio input' });
   fireEvent.change(selector, { target: { value: 'usb' } });
   const button = screen.getByRole('button', {
@@ -248,7 +249,8 @@ test('first capture shows elapsed capacity rather than an invented repeating cyc
 test('settings remain available before startup and diagnostics are disclosed separately', () => {
   host.snapshot = { ...host.snapshot, status: 'idle' };
   render(<App />);
-  fireEvent.click(screen.getByText('Settings', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Preferences' }));
   const settings = within(screen.getByRole('region', { name: 'Settings' }));
   const preference = settings.getByRole('checkbox', {
     name: 'Confirm before clearing',

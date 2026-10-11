@@ -24,7 +24,9 @@ test('REC controls immediate overdub and capture exclusion through the productio
   });
   const rec = first.getByRole('button', { name: /REC\/PLAY/ });
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await rec.click();
   await expect(first.getByTestId('captured-samples')).not.toHaveText('0');
   await rec.click();

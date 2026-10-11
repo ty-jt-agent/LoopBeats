@@ -17,7 +17,9 @@ test('starts actual WASM processing and explicitly controls monitoring', async (
     page.getByRole('button', { name: 'Enable monitoring' }),
   ).toBeDisabled();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(page.getByText('Monitoring off', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Enable monitoring' }).click();
   await expect(page.getByText('Monitoring on', { exact: true })).toBeVisible();
@@ -26,9 +28,13 @@ test('starts actual WASM processing and explicitly controls monitoring', async (
   await page.getByRole('button', { name: 'Disable monitoring' }).click();
   await expect(page.getByTestId('output-level')).toHaveText('0.000');
   await page.getByRole('button', { name: 'Stop audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio stopped');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio stopped');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(page.getByText('Monitoring off', { exact: true })).toBeVisible();
 });
 
@@ -46,7 +52,9 @@ test('shows recovery guidance when WASM is missing and retries successfully', as
   ).toBeDisabled();
   await page.unroute('**/audio/loop-engine.wasm');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(page.getByText('Monitoring off', { exact: true })).toBeVisible();
 });
 
@@ -71,7 +79,9 @@ test('permission denial is actionable and can be retried', async ({ page }) => {
   await page.getByRole('button', { name: 'Start audio' }).click();
   await expect(page.getByRole('alert')).toContainText('browser site settings');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
 });
 
 test('cancels pending permission and releases a late microphone result', async ({
@@ -94,12 +104,16 @@ test('cancels pending permission and releases a late microphone result', async (
     Boolean((window as Window & { lateInput?: MediaStream }).lateInput),
   );
   await page.getByRole('button', { name: 'Cancel audio startup' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio stopped');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio stopped');
   await page.waitForFunction(() => {
     const stream = (window as Window & { lateInput?: MediaStream }).lateInput;
     return stream?.getTracks().every((track) => track.readyState === 'ended');
   });
-  await expect(page.getByRole('status')).toContainText('Audio stopped');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio stopped');
 });
 
 test('canceled failure cleanup cannot overwrite a newer ready session', async ({
@@ -143,12 +157,16 @@ test('canceled failure cleanup cannot overwrite a newer ready session', async ({
     });
   });
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await page.waitForTimeout(1200);
   expect(
     await page.evaluate(
       () => (window as Window & { staleFailure?: boolean }).staleFailure,
     ),
   ).toBe(false);
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
 });

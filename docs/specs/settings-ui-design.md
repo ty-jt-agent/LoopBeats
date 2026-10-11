@@ -1,10 +1,11 @@
 # Settings UI design interview
 
-Status: draft; grouping agreed, interaction decisions under discussion.
+Status: interview complete; the owner accepted the interaction contract on
+2026-10-11. This document retains the interview context.
 
-The eight questions below now have concrete recommendations in the
+The eight questions below are resolved in the accepted
 [Settings interaction contract for #62](settings-interaction-contract-62.md).
-That contract awaits owner review; it does not yet unlock implementation.
+Its linked owner-acceptance record satisfies the design gate for implementation.
 
 ## Problem
 
@@ -24,12 +25,12 @@ These are presentation decisions. Existing session import/export and recovery
 contracts remain the baseline, including conversion consent, replacement
 confirmation, completed-only manual export and stopped restoration.
 
-## Questions to resolve
+## Resolved interview questions
 
-The current recommendation is a side panel on desktop and a full-screen panel
-on narrow screens. Opening Settings would leave audio running. This presentation
-has been proposed but is not yet agreed; a centered dialog or inline disclosure
-remain alternatives.
+The accepted presentation is a nonmodal side panel on desktop and a modal
+full-screen panel on narrow screens. Opening Settings leaves audio running.
+The interaction contract records the evaluated centered-dialog and inline
+disclosure alternatives and the accepted tradeoffs.
 
 1. Settings presentation on desktop and narrow screens.
 2. Navigation between groups and default opening section.
@@ -40,6 +41,6 @@ remain alternatives.
 7. Reset placement, confirmation and recovery-deletion explanation.
 8. Keyboard/focus behavior, dismissal and operations in progress.
 
-No new domain terms or architectural decision has been agreed yet. Use the
-existing root glossary and ADR-0002; capture further decisions here during the
-interview before implementation or ticket creation.
+No new domain terms or architectural decision are needed. Use the existing root
+glossary and ADR-0002; the accepted interaction contract governs implementation.
+Further amendments require owner review before implementation.

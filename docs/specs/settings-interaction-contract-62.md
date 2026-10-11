@@ -1,8 +1,10 @@
 # Settings interaction contract
 
-Status: proposed for owner review under #62. This document does not yet unlock
-#63. Parent #61 is unchanged. Owner approval must be recorded in #62 or the
-linked pull request before the design gate closes.
+Status: accepted by the owner on 2026-10-11, without amendments, against reviewed
+revision [88c4889](https://github.com/ty-jt-agent/LoopBeats/blob/88c4889094cb36e259dfbaf3234196b289cbf9f5/docs/specs/settings-interaction-contract-62.md)
+in PR #68. The owner replied: “Accept the contract as written.”
+[The acceptance record in #62](https://github.com/ty-jt-agent/LoopBeats/issues/62#issuecomment-6105451861)
+satisfies the design gate and permits #63 to proceed. Parent #61 is unchanged.
 
 This contract resolves the eight questions in
 [the design interview](settings-ui-design.md). It changes presentation only;
@@ -11,7 +13,7 @@ eligibility, recovery ownership and deletion barriers remain authoritative.
 
 ## 1. Presentation and dismissal
 
-Recommend a right-hand, nonmodal Settings panel at viewport widths of at least
+Use a right-hand, nonmodal Settings panel at viewport widths of at least
 1024 CSS pixels. Reserve space for a panel up to 28rem wide instead of covering
 track controls. Below 1024 CSS pixels, use a modal panel occupying the viewport,
 with an independently scrolling body and visible heading and Close button.
@@ -20,8 +22,8 @@ Opening either presentation leaves audio running.
 The desktop panel keeps performance controls accessible. The narrow modal avoids
 cramped adjacent controls, at the cost of requiring Close before interacting
 with tracks. A centered modal would obstruct desktop performance controls; the
-existing inline disclosure makes the longer workflows harder to scan. These
-tradeoffs are recommendations awaiting owner review, not earlier agreements.
+existing inline disclosure makes the longer workflows harder to scan. The owner
+accepted these tradeoffs in the review recorded above.
 
 The Settings trigger opens the panel, or closes it when already open. Close and
 Escape dismiss it; clicking outside does not. Viewport changes preserve the
@@ -256,8 +258,10 @@ remain the observation seam; no hardware checklist gates these presentation tick
 workflow's controls. Those four workflow slices remain independently blocked
 only by #63. This contract does not change their dependency graph.
 
-Owner review must approve or amend the concrete choices above, including the
-desktop/nonmodal versus narrow/modal tradeoff. Record that review with a link to
-the reviewed revision in #62. Until then, keep #62 open and #63 blocked. Merging
-documentation alone is not approval of these decisions. No new domain vocabulary
-or architectural decision is required for these reversible presentation choices.
+Owner review is complete for the concrete choices above, including the
+desktop/nonmodal versus narrow/modal tradeoff. The linked acceptance record
+identifies the reviewed revision; #62's owner-review prerequisite for #63 is
+satisfied. Documentation merge and engineering approval alone did not satisfy
+that requirement. Future changes to these decisions require a new owner review.
+No new domain vocabulary or architectural decision is required for these
+reversible presentation choices.

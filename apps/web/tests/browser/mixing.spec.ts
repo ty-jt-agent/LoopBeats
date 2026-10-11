@@ -15,7 +15,9 @@ test('volume and mute controls acknowledge engine values while recording and pla
 }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   const track = page.getByRole('region', {
     name: 'Track 1 · Loop',
     exact: true,

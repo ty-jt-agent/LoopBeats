@@ -26,7 +26,9 @@ test('second track controls enforce capture ownership and restart only the selec
   const rec2 = second.getByRole('button', { name: /REC\/PLAY/ });
   await expect(rec2).toBeDisabled();
   await page.getByRole('button', { name: 'Start audio' }).click();
-  await expect(page.getByRole('status')).toContainText('Audio ready');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
   await expect(rec2).toBeEnabled();
   await rec1.click();
   await expect(first.getByTestId('track-state')).toHaveText('Recording');
