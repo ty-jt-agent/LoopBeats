@@ -9,6 +9,7 @@ type Props = {
   enabled: boolean;
   client: AudioClient;
   onClear: () => void;
+  clearError?: string;
 };
 
 // Translate the current snapshot into an action, never into a new track state.
@@ -43,6 +44,7 @@ export function TrackStrip({
   enabled,
   client,
   onClear,
+  clearError,
 }: Props) {
   const number = trackId + 1;
   const mode = track.mode === 'OneShot' ? 'One-shot' : 'Loop';
@@ -171,6 +173,7 @@ export function TrackStrip({
           : 'Recording limit: one shared cycle.'}{' '}
         Remaining: <span data-testid="capture-remaining">{remaining} s</span>
       </p>
+      {clearError && <p role="alert">{clearError}</p>}
       <details className="track-details">
         <summary>Track {number} details</summary>
         <details>

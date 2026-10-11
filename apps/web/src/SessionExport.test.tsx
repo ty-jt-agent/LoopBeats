@@ -18,13 +18,13 @@ test('canceling a pending export preserves the session and offers another attemp
       enabled
     />,
   );
-  fireEvent.click(screen.getByRole('button', { name: 'Export session' }));
-  expect(screen.getByRole('button', { name: 'Export session' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Save ZIP' }));
+  expect(screen.getByRole('button', { name: 'Save ZIP' })).toBeDisabled();
   await act(async () =>
     fireEvent.click(screen.getByRole('button', { name: 'Cancel export' })),
   );
   expect(screen.getByRole('status')).toHaveTextContent('Export canceled.');
-  expect(screen.getByRole('button', { name: 'Export session' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Save ZIP' })).toBeEnabled();
 });
 
 test('export failure is actionable without downloading an archive', async () => {
@@ -42,10 +42,10 @@ test('export failure is actionable without downloading an archive', async () => 
     />,
   );
   await act(async () =>
-    fireEvent.click(screen.getByRole('button', { name: 'Export session' })),
+    fireEvent.click(screen.getByRole('button', { name: 'Save ZIP' })),
   );
   expect(screen.getByRole('alert')).toHaveTextContent(
     'Recording changed during export. Try again.',
   );
-  expect(screen.getByRole('button', { name: 'Export session' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Save ZIP' })).toBeEnabled();
 });

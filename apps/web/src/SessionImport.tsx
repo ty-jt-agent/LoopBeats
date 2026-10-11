@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { AudioClient } from '@loopbeats/audio-client';
+import { RecoverySettings } from './RecoverySettings';
+import { recoveryDeletionNotice } from './recovery-presentation';
 type Confirmation =
   | { kind: 'replace' }
   | { kind: 'discard' }
@@ -8,6 +10,7 @@ type Confirmation =
 export function SessionImport({
   client,
   enabled,
+  disabledReason,
   onBusy,
   onStatus,
   onConfirmation,
@@ -15,6 +18,7 @@ export function SessionImport({
 }: {
   client: AudioClient;
   enabled: boolean;
+  disabledReason?: string;
   onBusy: (busy: boolean) => void;
   onStatus?: (status: string) => void;
   onConfirmation?: () => void;
@@ -28,23 +32,28 @@ export function SessionImport({
   const [progress, setProgress] = useState<number | null>(null);
   const [committing, setCommitting] = useState(false);
   const [message, setMessage] = useState('');
+  const [workflow, setWorkflow] = useState<'load' | 'recover' | 'discard'>(
+    'load',
+  );
   const [error, setError] = useState('');
   const recovery = useSyncExternalStore(
     client.subscribe,
     client.getRecoverySnapshot,
   );
-  const later = !recovery.offerVisible;
+  const [restoredPartial, setRestoredPartial] = useState<number | null>(null);
   const setLater = (deferred: boolean) => client.showRecoveryOffer(!deferred);
   useEffect(() => () => operation.current?.abort(), []);
   useEffect(() => {
     onStatus?.(
       progress !== null
         ? committing
-          ? 'Finishing load…'
-          : `Loading session: ${Math.round(progress * 100)}%`
+          ? workflow === 'discard'
+            ? 'Deleting saved workspace...'
+            : 'Finishing load…'
+          : `${workflow === 'discard' ? 'Discarding saved workspace' : workflow === 'recover' ? 'Recovering session' : 'Loading session'}: ${Math.round(progress * 100)}%`
         : error || message,
     );
-  }, [progress, committing, error, message, onStatus]);
+  }, [progress, committing, error, message, workflow, onStatus]);
   useEffect(() => {
     if (confirming) {
       dialog.current?.showModal();
@@ -60,6 +69,7 @@ export function SessionImport({
     const controller = new AbortController();
     confirmationTrigger.current = document.activeElement as HTMLElement | null;
     operation.current = controller;
+    setWorkflow(discard ? 'discard' : file ? 'load' : 'recover');
     onBusy(true);
     setProgress(0);
     setCommitting(false);
@@ -85,6 +95,7 @@ export function SessionImport({
     try {
       if (discard) {
         if (await confirm(controller.signal, { kind: 'discard' })) {
+          setCommitting(true);
           await client.discardRecovery();
           setLater(false);
           setMessage('Recovery snapshot discarded.');
@@ -106,9 +117,18 @@ export function SessionImport({
       const imported = await (file
         ? client.importSession(file, options)
         : client.recoverSession(options));
+      if (imported)
+        setRestoredPartial(
+          !file &&
+            recovery.offer?.progress?.captureKinds.some((kind) => kind !== null)
+            ? recovery.offer.progress.startedAt
+            : null,
+        );
       setMessage(
         imported
-          ? 'Session imported. Recordings are stopped; monitoring is off.'
+          ? file
+            ? 'Session imported. Recordings are stopped; monitoring is off.'
+            : 'Session recovered. Recordings are stopped; monitoring is off.'
           : 'Import canceled.',
       );
     } catch (failure) {
@@ -128,164 +148,124 @@ export function SessionImport({
     }
   };
   return (
-    <section aria-labelledby="import-heading">
-      <section aria-labelledby="recovery-heading">
-        <h2 id="recovery-heading">Session recovery</h2>
-        <p data-testid="recovery-status">{recovery.status}</p>
-        {recovery.savedAt !== null && (
-          <p>
-            Last successful snapshot:{' '}
-            {new Date(recovery.savedAt).toLocaleString()}.
-          </p>
-        )}
+    <>
+      <section aria-label="Session file loading">
+        <h2 id="import-heading">Load ZIP</h2>
         <p>
-          Recordings and overdubs are checkpointed every five seconds while
-          active. Saved audio represents the checkpoint start, not the later
-          save time. Delays or crashes may lose newer changes; browser storage
-          may be cleared. Export a session ZIP for a portable backup.
+          Load a saved session. If current recordings exist, you will confirm
+          before replacing them. Imported recordings start stopped.
         </p>
-        <p>
-          CLEAR, replacement and global STOP during initial recording remove the
-          previous recovery snapshot first. Remaining recordings are protected
-          again after the next successful save.
-        </p>
-        {recovery.offer && !later && (
+        {disabledReason && <p>{disabledReason}</p>}
+        <label>
+          Load ZIP
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            disabled={!enabled || progress !== null}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = '';
+              if (file) void start(file);
+            }}
+          />
+        </label>
+        {progress !== null && (
           <>
-            {recovery.offer.progress?.captureKinds.some(
+            {committing && (
+              <p role="status">
+                {workflow === 'discard'
+                  ? 'Deleting saved workspace...'
+                  : 'Finishing load...'}
+              </p>
+            )}
+            <progress
+              aria-label="Session import progress"
+              max="1"
+              value={progress}
+            />
+            <button
+              disabled={committing}
+              onClick={() => operation.current?.abort()}
+            >
+              Cancel import
+            </button>
+          </>
+        )}
+        <dialog
+          ref={dialog}
+          aria-labelledby="import-confirm-heading"
+          onCancel={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            answer.current?.(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') event.stopPropagation();
+          }}
+        >
+          <h2 id="import-confirm-heading">
+            {confirming?.kind === 'conversion'
+              ? 'Convert sample rate?'
+              : confirming?.kind === 'discard'
+                ? 'Discard recovery snapshot?'
+                : 'Replace current session?'}
+          </h2>
+          {confirming?.kind === 'conversion' ? (
+            <p>
+              Convert from {confirming.sourceRate.toLocaleString()} Hz to{' '}
+              {confirming.targetRate.toLocaleString()} Hz? Conversion changes
+              sample values and may affect fidelity. Lowering the sample rate
+              loses high-frequency content. Your current session stays intact
+              until replacement is confirmed.
+            </p>
+          ) : confirming?.kind === 'discard' ? (
+            <p>
+              This deletes the browser recovery snapshot. Your current live
+              recordings remain unchanged. Subsequent recovery saving can create
+              a new copy.
+            </p>
+          ) : (
+            <p>
+              This replaces all current recordings and track settings. Imported
+              recordings will be stopped.{' '}
+              {workflow === 'recover'
+                ? 'The saved recovery source is retained while recovery is validated and committed; subsequent saving protects the recovered workspace.'
+                : recoveryDeletionNotice(recovery)}
+            </p>
+          )}
+          {workflow === 'recover' &&
+            recovery.offer?.progress?.captureKinds.some(
               (kind) => kind !== null,
             ) && (
               <p>
-                Recovery contains partial recording or overdub audio frozen at{' '}
-                {new Date(recovery.offer.progress.startedAt).toLocaleString()}.
-                Recorded tracks open stopped; capture never resumes.
+                Only partial recording or overdub audio through the saved
+                checkpoint is restored. Capture never resumes; unsaved later
+                audio is not included.
               </p>
             )}
-            <button onClick={() => setLater(true)}>Later</button>
-            <button
-              disabled={!enabled || progress !== null || !recovery.owner}
-              onClick={() => void start()}
-            >
-              Recover session
-            </button>
-            <p>
-              Start audio to recover. Conversion and replacement require
-              confirmation when needed.
-            </p>
-          </>
-        )}
-        {recovery.offer && later && (
-          <button onClick={() => setLater(false)}>Show recovery offer</button>
-        )}
-        {(recovery.offer || recovery.error) && recovery.owner && (
-          <button
-            disabled={progress !== null}
-            onClick={() => void start(undefined, true)}
-          >
-            Discard recovery
+          <button autoFocus onClick={() => answer.current?.(false)}>
+            Cancel
           </button>
-        )}
-        {recovery.owner && !recovery.offer && (
-          <button onClick={() => client.retryRecoverySaving()}>
-            Retry saving
+          <button onClick={() => answer.current?.(true)}>
+            {confirming?.kind === 'conversion'
+              ? 'Convert session'
+              : confirming?.kind === 'discard'
+                ? 'Discard snapshot'
+                : 'Replace session'}
           </button>
-        )}
-        {!recovery.owner && (
-          <button onClick={() => void client.retryRecoveryOwnership()}>
-            Retry recovery ownership
-          </button>
-        )}
-        {recovery.error && (
-          <p role="alert">
-            {recovery.error} Last successful snapshot is retained unless
-            explicitly discarded.
-          </p>
-        )}
+        </dialog>
+        {message && <p role="status">{message}</p>}
+        {error && <p role="alert">{error}</p>}
       </section>
-      <h2 id="import-heading">Session import</h2>
-      <p>
-        Import a session ZIP. Different sample rates require your consent before
-        conversion. Imported recordings stay stopped. Finish recording before
-        importing.
-      </p>
-      <label>
-        Import session
-        <input
-          type="file"
-          accept=".zip,application/zip"
-          disabled={!enabled || progress !== null}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            event.currentTarget.value = '';
-            if (file) void start(file);
-          }}
-        />
-      </label>
-      {progress !== null && (
-        <>
-          <progress
-            aria-label="Session import progress"
-            max="1"
-            value={progress}
-          />
-          <button
-            disabled={committing}
-            onClick={() => operation.current?.abort()}
-          >
-            Cancel import
-          </button>
-        </>
-      )}
-      <dialog
-        ref={dialog}
-        aria-labelledby="import-confirm-heading"
-        onCancel={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          answer.current?.(false);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') event.stopPropagation();
-        }}
-      >
-        <h2 id="import-confirm-heading">
-          {confirming?.kind === 'conversion'
-            ? 'Convert sample rate?'
-            : confirming?.kind === 'discard'
-              ? 'Discard recovery snapshot?'
-              : 'Replace current session?'}
-        </h2>
-        {confirming?.kind === 'conversion' ? (
-          <p>
-            Convert from {confirming.sourceRate.toLocaleString()} Hz to{' '}
-            {confirming.targetRate.toLocaleString()} Hz? Conversion changes
-            sample values and may affect fidelity. Lowering the sample rate
-            loses high-frequency content. Your current session stays intact
-            until replacement is confirmed.
-          </p>
-        ) : confirming?.kind === 'discard' ? (
-          <p>
-            This deletes the browser recovery snapshot. Your current live
-            recordings remain unchanged.
-          </p>
-        ) : (
-          <p>
-            This replaces all current recordings and track settings. Imported
-            recordings will be stopped.
-          </p>
-        )}
-        <button autoFocus onClick={() => answer.current?.(false)}>
-          Cancel
-        </button>
-        <button onClick={() => answer.current?.(true)}>
-          {confirming?.kind === 'conversion'
-            ? 'Convert session'
-            : confirming?.kind === 'discard'
-              ? 'Discard snapshot'
-              : 'Replace session'}
-        </button>
-      </dialog>
-      {message && <p role="status">{message}</p>}
-      {error && <p role="alert">{error}</p>}
-    </section>
+      <RecoverySettings
+        recovery={recovery}
+        enabled={enabled}
+        busy={progress !== null}
+        client={client}
+        onRecover={() => void start()}
+        onDiscard={() => void start(undefined, true)}
+        restoredPartial={restoredPartial}
+      />
+    </>
   );
 }

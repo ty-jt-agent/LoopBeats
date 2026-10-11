@@ -53,9 +53,7 @@ async function ready(page: import('@playwright/test').Page) {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(
-    page.getByLabel('Import session', { exact: true }),
-  ).toBeEnabled();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
 }
 async function saved(page: import('@playwright/test').Page) {
   await expect(page.getByTestId('recovery-status')).toContainText('Saved at', {
@@ -67,14 +65,12 @@ async function reloadOffer(page: import('@playwright/test').Page) {
   await page.reload();
   await page.getByRole('button', { name: 'View recovery' }).click();
   await expect(
-    page.getByRole('button', { name: 'Recover session', exact: true }),
+    page.getByRole('button', { name: 'Recover', exact: true }),
   ).toBeVisible();
 }
 async function rawExport(page: import('@playwright/test').Page) {
   const download = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   const file = await download;
   return parseSession(
     Uint8Array.from(await readFile((await file.path())!)).buffer,
@@ -96,7 +92,7 @@ test('Later and live actions preserve the previous workspace until explicit reco
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await reloadOffer(page);
@@ -105,11 +101,9 @@ test('Later and live actions preserve the previous workspace until explicit reco
     page.getByRole('complementary', { name: 'Recovery available' }),
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await expect(
-    page.getByLabel('Import session', { exact: true }),
-  ).toBeEnabled();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(6));
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('loop-length'),
@@ -122,9 +116,7 @@ test('Later and live actions preserve the previous workspace until explicit reco
   ).toHaveText('Empty');
   await reloadOffer(page);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('loop-length'),
   ).toHaveText('3');
@@ -164,7 +156,7 @@ test('failed recovery commit keeps the saved snapshot available for retry', asyn
   });
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await reloadOffer(page);
@@ -172,22 +164,18 @@ test('failed recovery commit keeps the saved snapshot available for retry', asyn
   await page.evaluate(() =>
     window.dispatchEvent(new Event('fail-recovery-commit')),
   );
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('transfer failed');
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('track-state'),
   ).toHaveText('Empty');
   await expect(
-    page.getByRole('button', { name: 'Recover session', exact: true }),
+    page.getByRole('button', { name: 'Recover', exact: true }),
   ).toBeEnabled();
   await page.evaluate(() =>
     window.dispatchEvent(new Event('allow-recovery-commit')),
   );
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('loop-length'),
   ).toHaveText('3');
@@ -213,7 +201,7 @@ test('failed atomic checkpoint retains raw audio and settings from the last succ
   });
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page.evaluate(() =>
@@ -222,12 +210,15 @@ test('failed atomic checkpoint retains raw audio and settings from the last succ
   await page
     .getByRole('slider', { name: 'Master volume', exact: true })
     .fill('0.8');
-  await expect(page.getByTestId('recovery-status')).toContainText('failed');
+  await expect(page.getByTestId('recovery-status')).toHaveText(
+    'Recovery could not be saved.',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Retry saving', exact: true }),
+  ).toBeVisible();
   await reloadOffer(page);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('track-state'),
   ).toHaveText('Stopped');
@@ -253,7 +244,7 @@ test('Stop audio discard deletes recovery while ordinary reload retains it', asy
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page
@@ -265,10 +256,10 @@ test('Stop audio discard deletes recovery while ordinary reload retains it', asy
   await page.reload();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByTestId('recovery-status')).toContainText(
-    'No recovery snapshot',
+    'no snapshot yet',
   );
   await expect(
-    page.getByRole('button', { name: 'Recover session', exact: true }),
+    page.getByRole('button', { name: 'Recover', exact: true }),
   ).toHaveCount(0);
 });
 
@@ -278,7 +269,7 @@ test('another tab cannot overwrite recovery and offers it after ownership transf
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   const other = await context.newPage();
@@ -293,7 +284,7 @@ test('another tab cannot overwrite recovery and offers it after ownership transf
     'another tab',
   );
   await other
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(6));
   await expect(
     other.locator('.track-strip').nth(0).getByTestId('loop-length'),
@@ -305,17 +296,13 @@ test('another tab cannot overwrite recovery and offers it after ownership transf
     other.locator('.track-strip').nth(0).getByTestId('track-state'),
   ).toHaveText('Empty');
   await other.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await expect(
-    other.getByLabel('Import session', { exact: true }),
-  ).toBeEnabled();
+  await expect(other.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
   await page.close();
-  await other.getByRole('button', { name: 'Retry recovery ownership' }).click();
+  await other.getByRole('button', { name: 'Retry ownership' }).click();
   await expect(
-    other.getByRole('button', { name: 'Recover session', exact: true }),
+    other.getByRole('button', { name: 'Recover', exact: true }),
   ).toBeVisible();
-  await other
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await other.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(
     other.locator('.track-strip').nth(0).getByTestId('loop-length'),
   ).toHaveText('3');
@@ -329,7 +316,7 @@ test('CLEAR removes only its recording from the next recovered snapshot', async 
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   const track = page.locator('.track-strip').nth(0);
@@ -344,9 +331,7 @@ test('CLEAR removes only its recording from the next recovered snapshot', async 
   await saved(page);
   await reloadOffer(page);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Empty');
   await expect(
     page.locator('.track-strip').nth(1).getByTestId('track-state'),
@@ -375,13 +360,11 @@ test('completed recording is offered after reload and recovered only on request'
   await page.reload();
   await page.getByRole('button', { name: 'View recovery' }).click();
   await expect(
-    page.getByRole('button', { name: 'Recover session', exact: true }),
+    page.getByRole('button', { name: 'Recover', exact: true }),
   ).toBeVisible();
   await expect(track.getByTestId('track-state')).toHaveText('Empty');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Stopped');
   await expect(track.getByTestId('loop-length')).toHaveText(length!);
 });
@@ -391,7 +374,7 @@ test('unfinished One-shot prefix is checkpointed while the completed Loop remain
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(48000));
   await saved(page);
   const second = page.locator('.track-strip').nth(1);
@@ -423,9 +406,7 @@ test('unfinished One-shot prefix is checkpointed while the completed Loop remain
   await expect(second.getByTestId('track-state')).toHaveText('Recording');
   await reloadOffer(page);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(second.getByTestId('track-state')).toHaveText('Stopped');
   const recovered = await rawExport(page);
   expect(recovered.manifest.tracks[1].lengthSamples).toBeGreaterThan(48000);
@@ -447,7 +428,7 @@ test('active overdub checkpoints additions and reload offers stopped partial wor
   });
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(48000));
   await saved(page);
   const first = page.locator('.track-strip').nth(0);
@@ -456,13 +437,13 @@ test('active overdub checkpoints additions and reload offers stopped partial wor
   await first.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(first.getByTestId('track-state')).toHaveText('Overdubbing');
   await expect(page.getByTestId('recovery-status')).toContainText(
-    'Changes not yet saved.',
+    'Recovery changes pending.',
   );
   await page
     .getByRole('slider', { name: 'Master volume', exact: true })
     .fill('0.8');
   await expect(page.getByTestId('recovery-status')).toContainText(
-    'Changes not yet saved.',
+    'Recovery changes pending.',
   );
   await saved(page);
   await expect(first.getByTestId('track-state')).toHaveText('Overdubbing');
@@ -471,9 +452,7 @@ test('active overdub checkpoints additions and reload offers stopped partial wor
     page.getByText(/Recovery contains partial recording/),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(first.getByTestId('track-state')).toHaveText('Stopped');
   const recovered = await rawExport(page);
   expect(recovered.manifest.masterGain).toBeCloseTo(0.8, 6);
@@ -488,7 +467,7 @@ test('reset checkpoints Empty tracks without resurrecting recordings after reloa
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page
@@ -504,11 +483,9 @@ test('reset checkpoints Empty tracks without resurrecting recordings after reloa
   await saved(page);
   await reloadOffer(page);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Recover session', exact: true }),
+    page.getByRole('button', { name: 'Recover', exact: true }),
   ).toHaveCount(0);
   const recovered = await rawExport(page);
   expect(recovered.manifest.cycleLengthSamples).toBe(0);
@@ -539,7 +516,7 @@ test('global STOP retains initial capture on deletion failure and discards it on
   await expect(first.getByTestId('track-state')).toHaveText('Recording');
   await saved(page);
   await page.getByRole('button', { name: 'Global STOP', exact: true }).click();
-  await expect(page.getByTestId('recovery-status')).toContainText('failed');
+  await expect(page.getByTestId('recovery-status')).toContainText('could not');
   await expect(first.getByTestId('track-state')).toHaveText('Recording');
   await page.evaluate(() =>
     window.dispatchEvent(new Event('allow-recovery-delete')),
@@ -549,9 +526,7 @@ test('global STOP retains initial capture on deletion failure and discards it on
   await saved(page);
   await reloadOffer(page);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(first.getByTestId('track-state')).toHaveText('Empty');
   expect((await rawExport(page)).manifest.tracks[0].lengthSamples).toBe(0);
 });
@@ -581,9 +556,7 @@ test('first Loop recovers its frozen prefix while manual ZIP still omits active 
     page.getByText(/Recovery contains partial recording/),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(first.getByTestId('track-state')).toHaveText('Stopped');
   await expect(page.getByTestId('transport-state')).toHaveText('Stopped');
   await expect(page.getByText('Monitoring off', { exact: true })).toBeVisible();
@@ -624,7 +597,7 @@ test('recovery discard defaults to Cancel and explicitly removes an unsupported 
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('unsupported recovery');
   await page
-    .getByRole('button', { name: 'Discard recovery', exact: true })
+    .getByRole('button', { name: 'Discard saved workspace', exact: true })
     .click();
   const dialog = page.getByRole('dialog', {
     name: 'Discard recovery snapshot?',
@@ -634,11 +607,68 @@ test('recovery discard defaults to Cancel and explicitly removes an unsupported 
   ).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('alert')).toContainText('unsupported recovery');
+  await page.evaluate(() => {
+    let fail = true;
+    const remove = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (
+      ...args: Parameters<IDBObjectStore['delete']>
+    ) {
+      const request = remove.apply(this, args);
+      if (fail && this.transaction.db.name === 'loopbeats.recovery.v1') {
+        fail = false;
+        queueMicrotask(() => this.transaction.abort());
+      }
+      return request;
+    };
+  });
   await page
-    .getByRole('button', { name: 'Discard recovery', exact: true })
+    .getByRole('button', { name: 'Discard saved workspace', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', { name: 'Discard snapshot', exact: true })
+    .click();
+  await expect(page.getByTestId('recovery-status')).toHaveText(
+    'Recovery copy could not be deleted.',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Discard saved workspace', exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page
+      .getByRole('region', { name: 'Remove recordings', exact: true })
+      .getByText(/previous workspace.*retained/),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    let hold = true;
+    window.addEventListener('finish-discard', () => {
+      hold = false;
+    });
+    const remove = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (
+      ...args: Parameters<IDBObjectStore['delete']>
+    ) {
+      const request = remove.apply(this, args);
+      const keepAlive = () => {
+        if (hold) this.get('latest').onsuccess = keepAlive;
+      };
+      if (this.transaction.db.name === 'loopbeats.recovery.v1') keepAlive();
+      return request;
+    };
+  });
+  await page
+    .getByRole('button', { name: 'Discard saved workspace', exact: true })
     .click();
   await page.keyboard.press('Tab');
   await page.keyboard.press('Enter');
+  await expect(
+    page.getByRole('button', { name: 'Cancel import', exact: true }),
+  ).toBeDisabled();
+  await page.getByRole('button', { name: 'Close Settings' }).click();
+  await expect(
+    page.locator('.settings-launcher').getByRole('status'),
+  ).toHaveText('Deleting saved workspace...');
+  await page.getByRole('button', { name: 'View progress' }).click();
+  await page.evaluate(() => window.dispatchEvent(new Event('finish-discard')));
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
   await saved(page);
@@ -691,7 +721,7 @@ for (const invalid of [
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('unsupported recovery');
     await expect(
-      page.getByRole('button', { name: 'Recover session', exact: true }),
+      page.getByRole('button', { name: 'Recover', exact: true }),
     ).toHaveCount(0);
   });
 }
@@ -701,7 +731,7 @@ test('older completed checkpoint without progress metadata still recovers', asyn
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page.evaluate(async () => {
@@ -734,9 +764,110 @@ test('older completed checkpoint without progress metadata still recovers', asyn
     page.getByText(/Recovery contains partial recording/),
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Recover session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
   const recovered = await rawExport(page);
   expect(Array.from(recovered.read(0, 0, 3))).toEqual([0.25, -0.5, 0.75]);
 });
+
+for (const width of [1280, 320]) {
+  test(`reset deletion failure retains recordings and retries after confirmation at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.addInitScript(() => {
+      let fail = false;
+      window.addEventListener('fail-recovery-delete', () => {
+        fail = true;
+      });
+      window.addEventListener('allow-recovery-delete', () => {
+        fail = false;
+      });
+      const remove = IDBObjectStore.prototype.delete;
+      IDBObjectStore.prototype.delete = function (
+        ...args: Parameters<IDBObjectStore['delete']>
+      ) {
+        const request = remove.apply(this, args);
+        if (fail && this.transaction.db.name === 'loopbeats.recovery.v1')
+          queueMicrotask(() => this.transaction.abort());
+        return request;
+      };
+    });
+    await ready(page);
+    await page
+      .getByLabel('Load ZIP', { exact: true })
+      .setInputFiles(await knownSession());
+    await saved(page);
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event('fail-recovery-delete')),
+    );
+    const reset = page.getByRole('button', {
+      name: 'Reset session',
+      exact: true,
+    });
+    await page.screenshot({
+      path: testInfo.outputPath('session-settings.png'),
+    });
+    await reset.click();
+    const confirmation = page.getByRole('dialog', { name: 'Reset session?' });
+    await expect(
+      confirmation.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toBeFocused();
+    await expect(confirmation.getByText(/owned recovery copy/)).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath('reset-confirmation.png'),
+    });
+    await page.keyboard.press('Escape');
+    await expect(
+      page.getByRole('tab', { name: 'Session', exact: true }),
+    ).toBeVisible();
+    await expect(reset).toBeFocused();
+    await reset.click();
+    await confirmation
+      .getByRole('button', { name: 'Confirm', exact: true })
+      .click();
+    await expect(
+      page.getByText(/Recordings remain unchanged. Retry Reset/),
+    ).toBeVisible();
+    await expect(
+      page.locator('.track-strip').nth(0).getByTestId('track-state'),
+    ).toHaveText('Stopped');
+    await expect(reset).toBeFocused();
+    if (width === 1280) {
+      await page.getByRole('button', { name: 'Close Settings' }).click();
+      const first = page.locator('.track-strip').nth(0);
+      await first.getByText('Track 1 details', { exact: true }).click();
+      await first.getByRole('button', { name: 'CLEAR', exact: true }).click();
+      await page
+        .getByRole('dialog', { name: 'Clear Track 1?' })
+        .getByRole('button', { name: 'Confirm', exact: true })
+        .click();
+      await expect(first.getByRole('alert')).toContainText(
+        'Retry CLEAR on Track 1',
+      );
+      await expect(first.getByTestId('track-state')).toHaveText('Stopped');
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expect(
+        page
+          .getByRole('region', { name: 'Remove recordings', exact: true })
+          .getByRole('alert'),
+      ).toHaveCount(0);
+    }
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event('allow-recovery-delete')),
+    );
+    await reset.click();
+    await expect(
+      confirmation.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toBeFocused();
+    await confirmation
+      .getByRole('button', { name: 'Confirm', exact: true })
+      .click();
+    await expect(
+      page.locator('.track-strip').nth(0).getByTestId('track-state'),
+    ).toHaveText('Empty');
+    await expect(page.getByTestId('transport-position')).toHaveText('0');
+    await expect(
+      page.getByText('Monitoring off', { exact: true }),
+    ).toBeVisible();
+  });
+}

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -43,7 +44,7 @@ export function SettingsPanel({
         ?.querySelector<HTMLElement>('[aria-selected="true"]')
         ?.focus();
   }, [open]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !narrow) return;
     const background = backgroundRef.current;
     background?.setAttribute('inert', '');

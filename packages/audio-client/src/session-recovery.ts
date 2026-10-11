@@ -20,6 +20,13 @@ export type RecoveryRecord = {
   progress?: CheckpointInfo;
 };
 export type RecoveryState = {
+  /** Presentation of an existing failure; does not change recovery policy. */
+  failureKind?: 'initialization' | 'saving' | 'deletion' | 'operation';
+  frozenAt?: number | null;
+  invalidRecord?: boolean;
+  /** Observations of existing ownership/read barriers, not a second policy. */
+  savingPaused?: boolean;
+  available?: boolean;
   status: string;
   owner: boolean;
   offer: Pick<RecoveryRecord, 'savedAt' | 'revision' | 'progress'> | null;
@@ -190,7 +197,12 @@ export class SessionRecovery {
   ) {}
   getSnapshot = () => this.state;
   private publish(update: Partial<RecoveryState>) {
-    this.state = { ...this.state, ...update };
+    this.state = {
+      ...this.state,
+      ...update,
+      savingPaused: this.unresolved,
+      available: !this.disabled,
+    };
     this.host.notify();
   }
   async initialize(): Promise<void> {
@@ -204,7 +216,7 @@ export class SessionRecovery {
       this.disabled = true;
       this.publish({
         status: 'Recovery unavailable in this browser.',
-        error: 'Use Export session for a portable backup.',
+        error: 'Use Save ZIP for a portable backup.',
       });
       return;
     }
@@ -254,6 +266,9 @@ export class SessionRecovery {
                 : null,
               offerVisible: true,
               savedAt: record?.savedAt ?? null,
+              frozenAt: record?.progress?.startedAt ?? null,
+              failureKind: undefined,
+              invalidRecord: false,
               error: null,
               status: record
                 ? 'Recovery available.'
@@ -263,14 +278,19 @@ export class SessionRecovery {
             this.observe(this.host.snapshot(), []);
           } catch (error) {
             this.unresolved = true;
-            this.fail(error);
+            this.publish({
+              invalidRecord:
+                error instanceof Error &&
+                error.message.startsWith('Invalid or unsupported'),
+            });
+            this.fail(error, 'initialization');
           }
           resolve();
           await held;
         })
         .catch((error) => {
           this.disabled = true;
-          this.fail(error);
+          this.fail(error, 'initialization');
           resolve();
         });
     });
@@ -360,13 +380,17 @@ export class SessionRecovery {
       ),
     );
   }
-  private fail(error: unknown): void {
+  private fail(
+    error: unknown,
+    failureKind: RecoveryState['failureKind'],
+  ): void {
     this.publish({
+      failureKind,
       status: 'Recovery saving failed.',
       error:
         error instanceof Error
           ? error.message
-          : 'Recovery storage failed. Use Export session and retry.',
+          : 'Recovery storage failed. Use Save ZIP and retry.',
     });
   }
   private async save(): Promise<void> {
@@ -374,7 +398,7 @@ export class SessionRecovery {
     const controller = new AbortController();
     this.operation = controller;
     this.dirty = false;
-    this.publish({ status: 'Saving…', error: null });
+    this.publish({ status: 'Saving…', error: null, failureKind: undefined });
     let failed = false;
     try {
       const { archive, progress } = await this.host.checkpoint(
@@ -400,6 +424,7 @@ export class SessionRecovery {
       this.retryAfter = 0;
       this.publish({
         savedAt: record.savedAt,
+        frozenAt: progress.startedAt,
         status: this.dirty
           ? 'Changes not yet saved.'
           : `Saved at ${new Date(record.savedAt).toLocaleString()}. Audio frozen at ${new Date(progress.startedAt).toLocaleString()}.`,
@@ -409,7 +434,7 @@ export class SessionRecovery {
       if (!controller.signal.aborted) {
         failed = true;
         this.retryAfter = Date.now() + 30000;
-        this.fail(error);
+        this.fail(error, 'saving');
       }
     } finally {
       this.operation = undefined;
@@ -423,7 +448,10 @@ export class SessionRecovery {
     this.schedule(0);
   }
   report(error: unknown): void {
-    this.fail(error);
+    this.fail(
+      error,
+      this.state.failureKind === 'deletion' ? 'deletion' : 'operation',
+    );
   }
   /** Explicit operations cancel automatic transfer before acquiring AudioClient's operation slot. */
   async yieldToUser(): Promise<void> {
@@ -459,11 +487,14 @@ export class SessionRecovery {
       this.publish({
         offer: null,
         savedAt: null,
+        frozenAt: null,
+        failureKind: undefined,
+        invalidRecord: false,
         status: 'No recovery snapshot yet.',
         error: null,
       });
     } catch (error) {
-      this.fail(error);
+      this.fail(error, 'deletion');
       throw error;
     } finally {
       this.barrier = false;

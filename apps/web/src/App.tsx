@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -10,6 +11,10 @@ import { AudioClient } from '@loopbeats/audio-client';
 import { TrackStrip } from './TrackStrip';
 import { SessionExport } from './SessionExport';
 import { SessionImport } from './SessionImport';
+import {
+  recoveryPresentation,
+  recoveryDeletionNotice,
+} from './recovery-presentation';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
@@ -104,12 +109,16 @@ export function App() {
   const closeSettings = () => {
     if (document.querySelector('dialog[open]')) return;
     setSettingsOpen(false);
-    requestAnimationFrame(() => {
+  };
+  const previouslyOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (previouslyOpen.current && !settingsOpen) {
       const opener = settingsOpener.current;
       if (opener?.isConnected) opener.focus();
       if (document.activeElement !== opener) settingsTrigger.current?.focus();
-    });
-  };
+    }
+    previouslyOpen.current = settingsOpen;
+  }, [settingsOpen]);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [storedSettings] = useState(readSettings);
   const lastMix = useRef<Pick<StoredSettings, 'masterGain' | 'tracks'>>(
@@ -123,6 +132,10 @@ export function App() {
     () => storedSettings?.preferredInputId ?? '',
   );
   const [switchPending, setSwitchPending] = useState(false);
+  const [inputListError, setInputListError] = useState('');
+  const [removing, setRemoving] = useState(false);
+  const [removalError, setRemovalError] = useState('');
+  const [failedRemoval, setFailedRemoval] = useState<Removal | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
   const removalTrigger = useRef<HTMLElement | null>(null);
@@ -155,26 +168,35 @@ export function App() {
     client.subscribe,
     client.getRecoverySnapshot,
   );
-  const loadInputDevices = async (): Promise<readonly InputDevice[]> => {
-    if (!navigator.mediaDevices?.enumerateDevices) return [];
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices
-      .filter((device) => device.kind === 'audioinput')
-      .map((device, index) => ({
-        id: device.deviceId,
-        label: device.label || `Audio input ${index + 1}`,
-      }));
-  };
+  const refreshInputDevices = useCallback(async () => {
+    try {
+      const devices =
+        (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
+      setInputDevices(
+        devices
+          .filter((device) => device.kind === 'audioinput')
+          .map((device, index) => ({
+            id: device.deviceId,
+            label: device.label || `Audio input ${index + 1}`,
+          })),
+      );
+      setInputListError('');
+    } catch {
+      setInputListError(
+        'Could not list input devices. Retry listing inputs when audio is ready.',
+      );
+    }
+  }, []);
   useEffect(() => {
     if (snapshot.status !== 'ready') return;
     const refresh = () => {
-      void loadInputDevices().then(setInputDevices);
+      void refreshInputDevices();
     };
     refresh();
     navigator.mediaDevices?.addEventListener('devicechange', refresh);
     return () =>
       navigator.mediaDevices?.removeEventListener('devicechange', refresh);
-  }, [client, snapshot.status]);
+  }, [snapshot.status, refreshInputDevices]);
   const restored = useRef(false);
   const skipPersistence = useRef(false);
   useEffect(() => {
@@ -257,22 +279,49 @@ export function App() {
       release();
     };
   }, [client]);
-  const remove = (target: Removal) => {
-    if (target.kind === 'track') void client.clear(target.trackId);
-    else void client.reset();
+  const remove = async (target: Removal) => {
+    setRemoving(true);
+    setRemovalError('');
+    setFailedRemoval(target);
+    let sent = false;
+    try {
+      const removed =
+        target.kind === 'track'
+          ? await client.clear(target.trackId)
+          : await client.reset();
+      sent = removed?.status === 'sent';
+      if (removed?.status === 'failed')
+        setRemovalError(
+          `${removed.error} Recordings remain unchanged. Retry ${target.kind === 'session' ? 'Reset session and confirm again' : `CLEAR on Track ${target.trackId + 1}`}.`,
+        );
+      if (removed?.status === 'stale')
+        setRemovalError(
+          'Audio session changed before removal. Check current audio state before trying again.',
+        );
+    } catch (failure) {
+      setRemovalError(
+        failure instanceof Error
+          ? `${failure.message} Recordings remain unchanged. Try again.`
+          : 'Could not remove recordings. Recordings remain unchanged. Try again.',
+      );
+    } finally {
+      setRemoving(false);
+    }
     // The confirmed action may disable its trigger when the engine replies.
     // Return to the disclosure so focus survives that asynchronous update.
-    removalTrigger.current =
-      removalTrigger.current?.closest('details')?.querySelector('summary') ??
-      (target.kind === 'session' ? selectedSettingsTab.current : null) ??
-      removalTrigger.current;
+    if (sent)
+      removalTrigger.current =
+        removalTrigger.current?.closest('details')?.querySelector('summary') ??
+        (target.kind === 'session' ? selectedSettingsTab.current : null) ??
+        removalTrigger.current;
     setPendingRemoval(null);
   };
   const requestRemoval = (target: Removal) => {
+    setRemovalError('');
     if (target.kind === 'session' || confirmClearing) {
       removalTrigger.current = document.activeElement as HTMLElement | null;
       setPendingRemoval(target);
-    } else remove(target);
+    } else void remove(target);
   };
   const ready = snapshot.status === 'ready';
   const tracksActive = snapshot.tracks.some((track) =>
@@ -281,6 +330,22 @@ export function App() {
   const tracksPlayable = snapshot.tracks.some(
     (track) => track.state === 'Stopped' && track.canPlay,
   );
+  const overdubbing = snapshot.tracks.some(
+    (track) => track.state === 'Overdubbing',
+  );
+  const recording = snapshot.tracks.some(
+    (track) => track.state === 'Recording',
+  );
+  const zipReason = !ready
+    ? 'Start audio to use session files.'
+    : sessionBusy
+      ? 'Wait for the current session operation or cancel it when available.'
+      : switchPending
+        ? 'Wait for the input change to finish.'
+        : overdubbing
+          ? 'Finish or stop overdubbing before using session files.'
+          : '';
+  const recoveryRemovalWarning = recoveryDeletionNotice(recovery);
   const starting =
     snapshot.status === 'starting' || snapshot.status === 'recovering';
   const status = {
@@ -322,7 +387,8 @@ export function App() {
                 {status}
               </p>
               <p className="session-guidance" aria-live="polite">
-                Recovery: {recovery.status} {recovery.error}
+                Recovery: {recoveryPresentation(recovery).summary}{' '}
+                {recovery.error}
               </p>
               {snapshot.error && <p role="alert">{snapshot.error}</p>}
               <p className="session-guidance">
@@ -455,6 +521,12 @@ export function App() {
                 cycleLengthSamples={snapshot.transport.cycleLengthSamples}
                 enabled={ready && !switchPending}
                 client={client}
+                clearError={
+                  failedRemoval?.kind === 'track' &&
+                  failedRemoval.trackId === index
+                    ? removalError
+                    : undefined
+                }
                 onClear={() =>
                   requestRemoval({ kind: 'track', trackId: index as TrackId })
                 }
@@ -526,6 +598,7 @@ export function App() {
           Session: (
             <>
               {' '}
+              {zipReason && <p>{zipReason}</p>}
               <SessionExport
                 client={client}
                 onBusy={setSessionBusy}
@@ -540,6 +613,11 @@ export function App() {
                 }
               />
               <SessionImport
+                disabledReason={
+                  !zipReason && recording
+                    ? 'Finish or stop recording before loading a session.'
+                    : undefined
+                }
                 client={client}
                 onBusy={setSessionBusy}
                 onStatus={setTransferStatus}
@@ -561,13 +639,19 @@ export function App() {
                 className="destructive-controls"
                 aria-labelledby="reset-heading"
               >
-                <h2 id="reset-heading">Remove session recordings</h2>
+                <h2 id="reset-heading">Remove recordings</h2>
                 <p>
                   Reset removes every recording and the shared cycle. Track
-                  CLEAR removes only that recording.
+                  CLEAR removes only that recording. Monitoring turns off;
+                  modes, gains, mute and saved preferences remain.
                 </p>
+                <p>{recoveryRemovalWarning}</p>
+                {removalError && failedRemoval?.kind === 'session' && (
+                  <p role="alert">{removalError}</p>
+                )}
                 <button
                   disabled={
+                    removing ||
                     switchPending ||
                     !ready ||
                     (!snapshot.transport.cycleLengthSamples &&
@@ -583,13 +667,15 @@ export function App() {
           Audio: (
             <>
               {' '}
-              {ready && inputDevices.length > 0 && (
+              {
                 <label>
-                  Audio input
+                  Input device
                   <select
-                    aria-label="Audio input"
+                    aria-label="Input device"
                     value={snapshot.inputDeviceId ?? ''}
                     disabled={
+                      !ready ||
+                      inputDevices.length === 0 ||
                       switchPending ||
                       snapshot.transport.running ||
                       snapshot.tracks.some((track) =>
@@ -605,13 +691,21 @@ export function App() {
                         if (switched) {
                           setPreferredInputId(deviceId);
                           persistPreferences(confirmClearing, deviceId);
-                          void loadInputDevices().then(setInputDevices);
+                          void refreshInputDevices();
                         }
                         setSwitchPending(false);
                       });
                     }}
                   >
                     <option value="">System default</option>
+                    {snapshot.inputDeviceId &&
+                      !inputDevices.some(
+                        (device) => device.id === snapshot.inputDeviceId,
+                      ) && (
+                        <option value={snapshot.inputDeviceId}>
+                          System-selected input (current)
+                        </option>
+                      )}
                     {inputDevices.map((device) => (
                       <option key={device.id} value={device.id}>
                         {device.label}
@@ -619,7 +713,7 @@ export function App() {
                     ))}
                   </select>
                 </label>
-              )}
+              }
               {ready && (
                 <p>
                   Stop playback and capture before changing inputs. Completed
@@ -628,15 +722,55 @@ export function App() {
               )}
               {!ready && (
                 <p>
-                  Start audio to select an input. Saved preferences are restored
+                  Start audio to choose an input. Saved preferences are restored
                   when audio starts.
                 </p>
               )}
               {switchPending && (
                 <p role="status">
-                  Changing audio input. Track controls are unavailable until
-                  switching finishes.
+                  Changing input. Track controls are unavailable until switching
+                  finishes.
                 </p>
+              )}
+              {ready && inputDevices.length === 0 && (
+                <p>
+                  No available input devices were listed. Your acknowledged
+                  audio input remains in use. Restart audio to check available
+                  inputs.
+                </p>
+              )}
+              {inputListError && (
+                <>
+                  <p role="alert">{inputListError}</p>
+                  <button
+                    disabled={!ready}
+                    onClick={() => void refreshInputDevices()}
+                  >
+                    Retry listing inputs
+                  </button>
+                </>
+              )}
+              {snapshot.error && (
+                <p>
+                  {snapshot.error}{' '}
+                  {ready
+                    ? 'The acknowledged input is shown; retry selection when playback and capture are stopped.'
+                    : 'Use Start audio to retry after resolving this failure.'}
+                </p>
+              )}
+              {preferenceSave === 'failed' && (
+                <>
+                  <p role="status">
+                    Input preference applies for this visit; could not save in
+                    this browser.
+                  </p>
+                  <button onClick={() => persistPreferences()}>
+                    Retry saving preferences
+                  </button>
+                </>
+              )}
+              {preferenceSave === 'saved' && (
+                <p>Input preference saved in this browser.</p>
               )}
               {ready && (
                 <p>
@@ -694,7 +828,14 @@ export function App() {
           ref={confirmation}
           aria-labelledby="removal-heading"
           aria-describedby="removal-description"
-          onCancel={() => setPendingRemoval(null)}
+          onCancel={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!removing) setPendingRemoval(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') event.stopPropagation();
+          }}
         >
           <h2 id="removal-heading">
             {pendingRemoval.kind === 'track'
@@ -704,15 +845,18 @@ export function App() {
           <p id="removal-description">
             {pendingRemoval.kind === 'track'
               ? 'Remove this recording. The shared cycle and other track remain.'
-              : 'Remove all recordings and reset the shared cycle. Monitoring returns off.'}{' '}
+              : 'Remove all recordings, including unfinished work, and reset the shared cycle and transport to zero. Monitoring returns off. Modes, gains, mute and saved preferences remain.'}{' '}
             Audio continues until you confirm.
           </p>
-          <button onClick={() => setPendingRemoval(null)}>Cancel</button>
+          <p>{recoveryRemovalWarning}</p>
+          <button disabled={removing} onClick={() => setPendingRemoval(null)}>
+            Cancel
+          </button>
           <button
-            disabled={!ready || switchPending}
-            onClick={() => remove(pendingRemoval)}
+            disabled={!ready || switchPending || removing}
+            onClick={() => void remove(pendingRemoval)}
           >
-            Confirm
+            {removing ? 'Removing recordings...' : 'Confirm'}
           </button>
         </dialog>
       )}

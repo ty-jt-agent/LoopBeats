@@ -92,7 +92,7 @@ npm ci
 npm run dev
 ```
 
-The dev command builds the real audio assets first, so Cargo must be on PATH. Open the local URL printed by Vite (normally http://localhost:5173). Click **Start audio** and allow microphone access. Use wired headphones, then explicitly **Enable monitoring** to hear live input. **Stop audio** releases the microphone; the next session starts with monitoring off. For a first Loop, press **REC/PLAY — Record**, perform a short phrase, then press **Finish recording**: playback repeats with monitoring still off. **Track STOP** retains the recording, the combined button now offers **Play**, and **Global STOP** resets the shared timeline while retaining completed audio. During the first capture, Track STOP completes it silently; Global STOP discards it. On the other empty track, REC captures one shared cycle starting at the current phase; REC again finishes early with silence elsewhere, while Track STOP retains the full-length result stopped. Global STOP discards unfinished capture and retains completed recordings. **Stop audio** discards this temporary session recording; start a new session to try again. A connected audio interface can be selected as the browser/OS default input; use the Audio input selector under **Settings** to switch while playback and capture are stopped. To layer input onto a playing Loop, press **Overdub**, then **Finish overdub** to finish while playback continues. Only one capture or overdub can be active; the other track can keep playing. To try **One-shot**, select it in an empty track’s playback-mode menu before REC. REC again finishes capture and plays from the beginning once; PLAY retriggers, including during playback. The 60-second limit performs the same completion. One-shot never establishes or changes the shared cycle. Global STOP stops it even when no Loop transport is running. Its combined control plays or retriggers retained audio after capture; rerecording requires CLEAR, and retained recordings can change mode while stopped. Loop requires exact shared-cycle sample length, or establishes the first cycle on PLAY/REC when none exists. Once a shared cycle exists, restart it with Loop PLAY before new capture. Adjust **Track volume**, **Mute/Unmute** and **Master volume** to balance output. Volume controls range from silence to 100%; captured/overdubbed samples stay at full input volume. Monitoring passes through master volume. For a production preview, run `npm run build`, then `npm run preview`.
+The dev command builds the real audio assets first, so Cargo must be on PATH. Open the local URL printed by Vite (normally http://localhost:5173). Click **Start audio** and allow microphone access. Use wired headphones, then explicitly **Enable monitoring** to hear live input. **Stop audio** releases the microphone; the next session starts with monitoring off. For a first Loop, press **REC/PLAY — Record**, perform a short phrase, then press **Finish recording**: playback repeats with monitoring still off. **Track STOP** retains the recording, the combined button now offers **Play**, and **Global STOP** resets the shared timeline while retaining completed audio. During the first capture, Track STOP completes it silently; Global STOP discards it. On the other empty track, REC captures one shared cycle starting at the current phase; REC again finishes early with silence elsewhere, while Track STOP retains the full-length result stopped. Global STOP discards unfinished capture and retains completed recordings. **Stop audio** discards this temporary session recording; start a new session to try again. A connected audio interface can be selected as the browser/OS default input; use the Input device selector under **Settings > Audio** to switch while playback and capture are stopped. To layer input onto a playing Loop, press **Overdub**, then **Finish overdub** to finish while playback continues. Only one capture or overdub can be active; the other track can keep playing. To try **One-shot**, select it in an empty track’s playback-mode menu before REC. REC again finishes capture and plays from the beginning once; PLAY retriggers, including during playback. The 60-second limit performs the same completion. One-shot never establishes or changes the shared cycle. Global STOP stops it even when no Loop transport is running. Its combined control plays or retriggers retained audio after capture; rerecording requires CLEAR, and retained recordings can change mode while stopped. Loop requires exact shared-cycle sample length, or establishes the first cycle on PLAY/REC when none exists. Once a shared cycle exists, restart it with Loop PLAY before new capture. Adjust **Track volume**, **Mute/Unmute** and **Master volume** to balance output. Volume controls range from silence to 100%; captured/overdubbed samples stay at full input volume. Monitoring passes through master volume. For a production preview, run `npm run build`, then `npm run preview`.
 
 The two-track performance panel places master controls above adjacent track strips on desktop, with vertical volume faders, independent mute and engine-derived progress. Open **Track details** for sample counts and CLEAR; open **Settings** for input selection, confirmation preferences and reset, or **Diagnostics** for raw engine values. **Stop audio — discard session** releases input and discards recordings; **Global STOP** retains completed audio. Responsive/accessibility coverage and review examples are documented in [the #44 verification record](docs/testing/performance-ui-44.md), and settings/lifecycle safeguards in [the #43 verification record](docs/testing/performance-ui-43.md).
 
@@ -108,8 +108,10 @@ Preferences for Confirm before clearing. Opening or closing Settings leaves audi
 and transfers running; View progress returns to an ongoing transfer. Preferences
 apply immediately and report browser-save failures with a retry. See
 [the #63 verification record](docs/testing/settings-ui-63.md).
+The Audio, ZIP, compact Recovery and separate Reset refinements are covered in
+[the #64–#67 verification record](docs/testing/settings-ui-64-67.md).
 
-Open **Settings** and choose **Export session** while audio is ready. The ZIP
+Open **Settings** and choose **Save ZIP** while audio is ready. The ZIP
 contains a versioned session manifest and mono float32 WAVs for completed
 recordings, preserving raw audio, modes, gain/mute, master gain and shared-cycle
 alignment. Unfinished initial recordings are excluded; finish overdub before
@@ -118,7 +120,7 @@ unchanged. See [the export contract](docs/specs/session-export-50.md).
 
 ## Session import (#51, #52)
 
-Start audio, finish any recording/overdub, then select **Import session** in
+Start audio, finish any recording/overdub, then select **Load ZIP** in
 Settings and choose an exported session ZIP. The complete archive is validated
 before replacement. When current recordings exist, **Replace current session?**
 defaults to Cancel. You can cancel validation or transfer; live playback can
@@ -138,10 +140,12 @@ Completed recordings and session configuration are checkpointed automatically
 in this browser. Changes coalesce for one second, with a five-second scheduling
 target when eligible. Playback continues; active overdub postpones saving until
 it finishes, and unfinished initial capture is excluded. The last successful
-snapshot survives a failed write. Recovery status and the saved time are visible.
+snapshot survives a failed write. Compact Recovery status and the last successful
+save are visible in **Settings > Session**; open **Recovery details** for
+checkpoint timing and browser-storage limitations.
 
 After reload, review the recovery offer and explicitly **Start audio** and
-**Recover session** to restore Stopped tracks at transport zero with monitoring
+**Recover** to restore Stopped tracks at transport zero with monitoring
 off. Rate conversion and replacement use the usual confirmations. **Later**
 retains the offer under Settings and pauses saving until recovery or explicit
 discard. One tab owns recovery; other tabs can use live audio without overwriting
