@@ -11,6 +11,7 @@ import { AudioClient } from '@loopbeats/audio-client';
 import { TrackStrip } from './TrackStrip';
 import { SessionExport } from './SessionExport';
 import { SessionImport } from './SessionImport';
+import { recoveryDeletionNotice } from './recovery-deletion-notice';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
@@ -128,6 +129,9 @@ export function App() {
     () => storedSettings?.preferredInputId ?? '',
   );
   const [switchPending, setSwitchPending] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removalError, setRemovalError] = useState('');
+  const [failedRemoval, setFailedRemoval] = useState<Removal | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
   const removalTrigger = useRef<HTMLElement | null>(null);
@@ -262,22 +266,50 @@ export function App() {
       release();
     };
   }, [client]);
-  const remove = (target: Removal) => {
-    if (target.kind === 'track') void client.clear(target.trackId);
-    else void client.reset();
+  const recoveryRemovalWarning = recoveryDeletionNotice(recovery);
+  const remove = async (target: Removal) => {
+    setRemoving(true);
+    setRemovalError('');
+    setFailedRemoval(target);
+    let sent = false;
+    try {
+      const removed =
+        target.kind === 'track'
+          ? await client.clear(target.trackId)
+          : await client.reset();
+      sent = removed?.status === 'sent';
+      if (removed?.status === 'failed')
+        setRemovalError(
+          `${removed.error} Recordings remain unchanged. Retry ${target.kind === 'session' ? 'Reset session and confirm again' : `CLEAR on Track ${target.trackId + 1}`}.`,
+        );
+      if (removed?.status === 'stale')
+        setRemovalError(
+          'Audio session changed before removal. Check current audio state before trying again.',
+        );
+    } catch (failure) {
+      setRemovalError(
+        failure instanceof Error
+          ? `${failure.message} Recordings remain unchanged. Try again.`
+          : 'Could not remove recordings. Recordings remain unchanged. Try again.',
+      );
+    } finally {
+      setRemoving(false);
+    }
     // The confirmed action may disable its trigger when the engine replies.
     // Return to the disclosure so focus survives that asynchronous update.
-    removalTrigger.current =
-      removalTrigger.current?.closest('details')?.querySelector('summary') ??
-      (target.kind === 'session' ? selectedSettingsTab.current : null) ??
-      removalTrigger.current;
+    if (sent)
+      removalTrigger.current =
+        removalTrigger.current?.closest('details')?.querySelector('summary') ??
+        (target.kind === 'session' ? selectedSettingsTab.current : null) ??
+        removalTrigger.current;
     setPendingRemoval(null);
   };
   const requestRemoval = (target: Removal) => {
+    setRemovalError('');
     if (target.kind === 'session' || confirmClearing) {
       removalTrigger.current = document.activeElement as HTMLElement | null;
       setPendingRemoval(target);
-    } else remove(target);
+    } else void remove(target);
   };
   const ready = snapshot.status === 'ready';
   const tracksActive = snapshot.tracks.some((track) =>
@@ -460,6 +492,12 @@ export function App() {
                 cycleLengthSamples={snapshot.transport.cycleLengthSamples}
                 enabled={ready && !switchPending}
                 client={client}
+                clearError={
+                  failedRemoval?.kind === 'track' &&
+                  failedRemoval.trackId === index
+                    ? removalError
+                    : undefined
+                }
                 onClear={() =>
                   requestRemoval({ kind: 'track', trackId: index as TrackId })
                 }
@@ -566,13 +604,19 @@ export function App() {
                 className="destructive-controls"
                 aria-labelledby="reset-heading"
               >
-                <h2 id="reset-heading">Remove session recordings</h2>
+                <h2 id="reset-heading">Remove recordings</h2>
                 <p>
                   Reset removes every recording and the shared cycle. Track
-                  CLEAR removes only that recording.
+                  CLEAR removes only that recording. Monitoring turns off;
+                  modes, gains, mute and saved preferences remain.
                 </p>
+                <p>{recoveryRemovalWarning}</p>
+                {removalError && failedRemoval?.kind === 'session' && (
+                  <p role="alert">{removalError}</p>
+                )}
                 <button
                   disabled={
+                    removing ||
                     switchPending ||
                     !ready ||
                     (!snapshot.transport.cycleLengthSamples &&
@@ -699,7 +743,14 @@ export function App() {
           ref={confirmation}
           aria-labelledby="removal-heading"
           aria-describedby="removal-description"
-          onCancel={() => setPendingRemoval(null)}
+          onCancel={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!removing) setPendingRemoval(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') event.stopPropagation();
+          }}
         >
           <h2 id="removal-heading">
             {pendingRemoval.kind === 'track'
@@ -709,15 +760,18 @@ export function App() {
           <p id="removal-description">
             {pendingRemoval.kind === 'track'
               ? 'Remove this recording. The shared cycle and other track remain.'
-              : 'Remove all recordings and reset the shared cycle. Monitoring returns off.'}{' '}
+              : 'Remove all recordings, including unfinished work, and reset the shared cycle and transport to zero. Monitoring returns off. Modes, gains, mute and saved preferences remain.'}{' '}
             Audio continues until you confirm.
           </p>
-          <button onClick={() => setPendingRemoval(null)}>Cancel</button>
+          <p>{recoveryRemovalWarning}</p>
+          <button disabled={removing} onClick={() => setPendingRemoval(null)}>
+            Cancel
+          </button>
           <button
-            disabled={!ready || switchPending}
-            onClick={() => remove(pendingRemoval)}
+            disabled={!ready || switchPending || removing}
+            onClick={() => void remove(pendingRemoval)}
           >
-            Confirm
+            {removing ? 'Removing recordings...' : 'Confirm'}
           </button>
         </dialog>
       )}
