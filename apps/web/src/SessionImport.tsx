@@ -30,22 +30,28 @@ export function SessionImport({
   const [progress, setProgress] = useState<number | null>(null);
   const [committing, setCommitting] = useState(false);
   const [message, setMessage] = useState('');
+  const [workflow, setWorkflow] = useState<'load' | 'recover' | 'discard'>(
+    'load',
+  );
   const [error, setError] = useState('');
   const recovery = useSyncExternalStore(
     client.subscribe,
     client.getRecoverySnapshot,
   );
-  const [loadingRecovery, setLoadingRecovery] = useState(false);
+  const [restoredPartial, setRestoredPartial] = useState<number | null>(null);
+  const setLater = (deferred: boolean) => client.showRecoveryOffer(!deferred);
   useEffect(() => () => operation.current?.abort(), []);
   useEffect(() => {
     onStatus?.(
       progress !== null
         ? committing
-          ? 'Finishing load…'
-          : `Loading session: ${Math.round(progress * 100)}%`
+          ? workflow === 'discard'
+            ? 'Deleting saved workspace...'
+            : 'Finishing load…'
+          : `${workflow === 'discard' ? 'Discarding saved workspace' : workflow === 'recover' ? 'Recovering session' : 'Loading session'}: ${Math.round(progress * 100)}%`
         : error || message,
     );
-  }, [progress, committing, error, message, onStatus]);
+  }, [progress, committing, error, message, workflow, onStatus]);
   useEffect(() => {
     if (confirming) {
       dialog.current?.showModal();
@@ -61,7 +67,7 @@ export function SessionImport({
     const controller = new AbortController();
     confirmationTrigger.current = document.activeElement as HTMLElement | null;
     operation.current = controller;
-    setLoadingRecovery(!file && !discard);
+    setWorkflow(discard ? 'discard' : file ? 'load' : 'recover');
     onBusy(true);
     setProgress(0);
     setCommitting(false);
@@ -87,8 +93,9 @@ export function SessionImport({
     try {
       if (discard) {
         if (await confirm(controller.signal, { kind: 'discard' })) {
+          setCommitting(true);
           await client.discardRecovery();
-          client.showRecoveryOffer(true);
+          setLater(false);
           setMessage('Recovery snapshot discarded.');
         }
         return;
@@ -108,9 +115,18 @@ export function SessionImport({
       const imported = await (file
         ? client.importSession(file, options)
         : client.recoverSession(options));
+      if (imported)
+        setRestoredPartial(
+          !file &&
+            recovery.offer?.progress?.captureKinds.some((kind) => kind !== null)
+            ? recovery.offer.progress.startedAt
+            : null,
+        );
       setMessage(
         imported
-          ? 'Session imported. Recordings are stopped; monitoring is off.'
+          ? file
+            ? 'Session imported. Recordings are stopped; monitoring is off.'
+            : 'Session recovered. Recordings are stopped; monitoring is off.'
           : 'Import canceled.',
       );
     } catch (failure) {
@@ -153,7 +169,13 @@ export function SessionImport({
         </label>
         {progress !== null && (
           <>
-            {committing && <p role="status">Finishing load...</p>}
+            {committing && (
+              <p role="status">
+                {workflow === 'discard'
+                  ? 'Deleting saved workspace...'
+                  : 'Finishing load...'}
+              </p>
+            )}
             <progress
               aria-label="Session import progress"
               max="1"
@@ -197,17 +219,28 @@ export function SessionImport({
           ) : confirming?.kind === 'discard' ? (
             <p>
               This deletes the browser recovery snapshot. Your current live
-              recordings remain unchanged.
+              recordings remain unchanged. Subsequent recovery saving can create
+              a new copy.
             </p>
           ) : (
             <p>
               This replaces all current recordings and track settings. Imported
               recordings will be stopped.{' '}
-              {loadingRecovery
+              {workflow === 'recover'
                 ? 'The saved recovery source is retained while recovery is validated and committed; subsequent saving protects the recovered workspace.'
                 : recoveryDeletionNotice(recovery)}
             </p>
           )}
+          {workflow === 'recover' &&
+            recovery.offer?.progress?.captureKinds.some(
+              (kind) => kind !== null,
+            ) && (
+              <p>
+                Only partial recording or overdub audio through the saved
+                checkpoint is restored. Capture never resumes; unsaved later
+                audio is not included.
+              </p>
+            )}
           <button autoFocus onClick={() => answer.current?.(false)}>
             Cancel
           </button>
@@ -223,12 +256,13 @@ export function SessionImport({
         {error && <p role="alert">{error}</p>}
       </section>
       <RecoverySettings
-        client={client}
         recovery={recovery}
         enabled={enabled}
         busy={progress !== null}
+        client={client}
         onRecover={() => void start()}
         onDiscard={() => void start(undefined, true)}
+        restoredPartial={restoredPartial}
       />
     </>
   );

@@ -2,93 +2,161 @@ import type { AudioClient } from '@loopbeats/audio-client';
 
 type Recovery = ReturnType<AudioClient['getRecoverySnapshot']>;
 
+import { recoveryPresentation } from './recovery-presentation';
+
 export function RecoverySettings({
-  client,
   recovery,
   enabled,
   busy,
   onRecover,
   onDiscard,
+  client,
+  restoredPartial,
 }: {
-  client: AudioClient;
   recovery: Recovery;
   enabled: boolean;
   busy: boolean;
   onRecover: () => void;
   onDiscard: () => void;
+  client: AudioClient;
+  restoredPartial: number | null;
 }) {
-  const later = !recovery.offerVisible;
+  const {
+    summary,
+    unavailable,
+    otherTab,
+    readFailed,
+    canDiscard,
+    canRetrySaving,
+  } = recoveryPresentation(recovery);
+  const partial = recovery.offer?.progress?.captureKinds.some(
+    (kind) => kind !== null,
+  )
+    ? recovery.offer.progress.startedAt
+    : restoredPartial;
   return (
     <section aria-labelledby="recovery-heading">
-      <h2 id="recovery-heading">Session recovery</h2>
-      <p data-testid="recovery-status">{recovery.status}</p>
-      {recovery.savedAt !== null && (
+      <h2 id="recovery-heading">Recovery</h2>
+      <p data-testid="recovery-status" role="status">
+        {summary}
+      </p>
+      {recovery.savedAt !== null && !recovery.status.startsWith('Saved at') && (
         <p>
           Last successful snapshot:{' '}
           {new Date(recovery.savedAt).toLocaleString()}.
         </p>
       )}
-      <p>
-        Recordings and overdubs are checkpointed every five seconds while
-        active. Saved audio represents the checkpoint start, not the later save
-        time. Delays or crashes may lose newer changes; browser storage may be
-        cleared. Export a session ZIP for a portable backup.
-      </p>
-      <p>
-        CLEAR, replacement and global STOP during initial recording remove the
-        previous recovery snapshot first. Remaining recordings are protected
-        again after the next successful save.
-      </p>
-      {recovery.offer && !later && (
+      {recovery.error && <p role="alert">{recovery.error}</p>}
+      {unavailable && (
+        <p>
+          Use Save ZIP for a portable backup when available. Reload to check
+          browser recovery availability again.
+        </p>
+      )}
+      {readFailed && (
+        <p>
+          Current recovery saving is paused. Use Save ZIP when available, then
+          reload to check recovery again.
+        </p>
+      )}
+      {recovery.offer && (
         <>
-          {recovery.offer.progress?.captureKinds.some(
-            (kind) => kind !== null,
-          ) && (
+          <p>
+            The saved workspace is kept. Saving the current workspace is paused
+            until you recover or discard it.
+          </p>
+          {partial !== null && partial !== undefined && (
             <p>
               Recovery contains partial recording or overdub audio frozen at{' '}
-              {new Date(recovery.offer.progress.startedAt).toLocaleString()}.
-              Recorded tracks open stopped; capture never resumes.
+              {new Date(partial).toLocaleString()}. Only the saved prefix is
+              restored; capture never resumes.
             </p>
           )}
-          <button onClick={() => client.showRecoveryOffer(false)}>Later</button>
-          <button
-            disabled={!enabled || busy || !recovery.owner}
-            onClick={onRecover}
-          >
-            Recover session
-          </button>
-          <p>
-            Start audio to recover. Conversion and replacement require
-            confirmation when needed.
-          </p>
+          {recovery.offerVisible ? (
+            <>
+              <button
+                disabled={!enabled || busy || !recovery.owner}
+                onClick={onRecover}
+              >
+                Recover
+              </button>
+              <button onClick={() => client.showRecoveryOffer(false)}>
+                Later
+              </button>
+              {!enabled && (
+                <p>
+                  Recover uses the same availability as Load ZIP. Start audio
+                  and finish any capture or input change first.
+                </p>
+              )}
+            </>
+          ) : (
+            <button onClick={() => client.showRecoveryOffer(true)}>
+              Show recovery offer
+            </button>
+          )}
         </>
       )}
-      {recovery.offer && later && (
-        <button onClick={() => client.showRecoveryOffer(true)}>
-          Show recovery offer
-        </button>
-      )}
-      {(recovery.offer || recovery.error) && recovery.owner && (
+      {canDiscard && (
         <button disabled={busy} onClick={onDiscard}>
-          Discard recovery
+          Discard saved workspace
         </button>
       )}
-      {recovery.owner && !recovery.offer && (
-        <button onClick={() => client.retryRecoverySaving()}>
+      {canRetrySaving && (
+        <button disabled={busy} onClick={() => client.retryRecoverySaving()}>
           Retry saving
         </button>
       )}
-      {!recovery.owner && (
-        <button onClick={() => void client.retryRecoveryOwnership()}>
-          Retry recovery ownership
-        </button>
+      {otherTab && (
+        <>
+          <p>
+            The owning tab keeps its recovery copy. Retrying does not take
+            ownership from an active tab.
+          </p>
+          <button
+            disabled={busy}
+            onClick={() => void client.retryRecoveryOwnership()}
+          >
+            Retry ownership
+          </button>
+        </>
       )}
-      {recovery.error && (
-        <p role="alert">
-          {recovery.error} Last successful snapshot is retained unless
-          explicitly discarded.
+      <details>
+        <summary>Recovery details</summary>
+        {recovery.savedAt !== null && (
+          <p>
+            Last successful snapshot:{' '}
+            {new Date(recovery.savedAt).toLocaleString()}. A failed save retains
+            this copy.
+          </p>
+        )}
+        {recovery.frozenAt != null && (
+          <p>
+            Saved audio is frozen at{' '}
+            {new Date(recovery.frozenAt).toLocaleString()}, before the save
+            completed.
+          </p>
+        )}
+        {restoredPartial !== null && (
+          <p>
+            Recovered partial recording or overdub audio is frozen at{' '}
+            {new Date(restoredPartial).toLocaleString()}. Only the saved prefix
+            was restored; tracks are stopped and capture never resumes.
+          </p>
+        )}
+        <p>
+          Recovery is local to this browser. Active recordings and overdubs are
+          checkpointed about every five seconds. Delays, crashes or cleared
+          browser storage may lose newer changes; no maximum loss interval is
+          guaranteed. Save ZIP provides a portable copy of completed recordings.
         </p>
-      )}
+        <p>
+          CLEAR, replacement and global STOP during initial recording can delete
+          the owned current checkpoint first. Surviving recordings have no
+          recovery copy until the next successful save. An unresolved previous
+          workspace or another tab's copy is retained.
+        </p>
+      </details>
     </section>
   );
 }
