@@ -91,6 +91,12 @@ function recovery(error: unknown, stage: string): string {
     : 'Audio could not start. Check your input device and browser support, then retry.';
 }
 
+/** Dispatch result; engine snapshots remain the acknowledgement of removal. */
+type DestructiveResult =
+  | { status: 'sent' }
+  | { status: 'stale' }
+  | { status: 'failed'; error: string };
+
 /** Owns browser audio resources; React consumes immutable engine/lifecycle snapshots. */
 export class AudioClient {
   private snapshot = idle();
@@ -953,13 +959,13 @@ export class AudioClient {
     if (this.snapshot.status === 'ready')
       this.session?.node?.port.postMessage(command);
   }
-  async clear(trackId: TrackId): Promise<void> {
-    await this.destructiveAction(() =>
+  async clear(trackId: TrackId): Promise<DestructiveResult> {
+    return this.destructiveAction(() =>
       this.command({ type: 'clear', trackId }),
     );
   }
-  async reset(): Promise<void> {
-    await this.destructiveAction(() => this.command({ type: 'reset' }));
+  async reset(): Promise<DestructiveResult> {
+    return this.destructiveAction(() => this.command({ type: 'reset' }));
   }
   setTrackGain(trackId: TrackId, gain: number): void {
     this.command({ type: 'set-track-gain', trackId, gain });
@@ -997,15 +1003,22 @@ export class AudioClient {
   }
   private async destructiveAction(
     action: () => void | Promise<void>,
-  ): Promise<void> {
+  ): Promise<DestructiveResult> {
     const session = this.session,
       attempt = this.attempt;
     try {
       await this.deletionBarrier();
-      if (session !== this.session || attempt !== this.attempt) return;
+      if (session !== this.session || attempt !== this.attempt)
+        return { status: 'stale' };
       await action();
+      return { status: 'sent' };
     } catch (error) {
       this.recoverySession?.report(error);
+      return {
+        status: 'failed',
+        error:
+          error instanceof Error ? error.message : 'Recovery deletion failed.',
+      };
     }
   }
   async stop(): Promise<void> {
