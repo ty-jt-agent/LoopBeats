@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -104,12 +105,16 @@ export function App() {
   const closeSettings = () => {
     if (document.querySelector('dialog[open]')) return;
     setSettingsOpen(false);
-    requestAnimationFrame(() => {
+  };
+  const previouslyOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (previouslyOpen.current && !settingsOpen) {
       const opener = settingsOpener.current;
       if (opener?.isConnected) opener.focus();
       if (document.activeElement !== opener) settingsTrigger.current?.focus();
-    });
-  };
+    }
+    previouslyOpen.current = settingsOpen;
+  }, [settingsOpen]);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [storedSettings] = useState(readSettings);
   const lastMix = useRef<Pick<StoredSettings, 'masterGain' | 'tracks'>>(
@@ -123,6 +128,7 @@ export function App() {
     () => storedSettings?.preferredInputId ?? '',
   );
   const [switchPending, setSwitchPending] = useState(false);
+  const [inputListError, setInputListError] = useState('');
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
   const removalTrigger = useRef<HTMLElement | null>(null);
@@ -155,26 +161,35 @@ export function App() {
     client.subscribe,
     client.getRecoverySnapshot,
   );
-  const loadInputDevices = async (): Promise<readonly InputDevice[]> => {
-    if (!navigator.mediaDevices?.enumerateDevices) return [];
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices
-      .filter((device) => device.kind === 'audioinput')
-      .map((device, index) => ({
-        id: device.deviceId,
-        label: device.label || `Audio input ${index + 1}`,
-      }));
-  };
+  const refreshInputDevices = useCallback(async () => {
+    try {
+      const devices =
+        (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
+      setInputDevices(
+        devices
+          .filter((device) => device.kind === 'audioinput')
+          .map((device, index) => ({
+            id: device.deviceId,
+            label: device.label || `Audio input ${index + 1}`,
+          })),
+      );
+      setInputListError('');
+    } catch {
+      setInputListError(
+        'Could not list input devices. Retry listing inputs when audio is ready.',
+      );
+    }
+  }, []);
   useEffect(() => {
     if (snapshot.status !== 'ready') return;
     const refresh = () => {
-      void loadInputDevices().then(setInputDevices);
+      void refreshInputDevices();
     };
     refresh();
     navigator.mediaDevices?.addEventListener('devicechange', refresh);
     return () =>
       navigator.mediaDevices?.removeEventListener('devicechange', refresh);
-  }, [client, snapshot.status]);
+  }, [snapshot.status, refreshInputDevices]);
   const restored = useRef(false);
   const skipPersistence = useRef(false);
   useEffect(() => {
@@ -583,13 +598,15 @@ export function App() {
           Audio: (
             <>
               {' '}
-              {ready && inputDevices.length > 0 && (
+              {
                 <label>
-                  Audio input
+                  Input device
                   <select
-                    aria-label="Audio input"
+                    aria-label="Input device"
                     value={snapshot.inputDeviceId ?? ''}
                     disabled={
+                      !ready ||
+                      inputDevices.length === 0 ||
                       switchPending ||
                       snapshot.transport.running ||
                       snapshot.tracks.some((track) =>
@@ -605,13 +622,21 @@ export function App() {
                         if (switched) {
                           setPreferredInputId(deviceId);
                           persistPreferences(confirmClearing, deviceId);
-                          void loadInputDevices().then(setInputDevices);
+                          void refreshInputDevices();
                         }
                         setSwitchPending(false);
                       });
                     }}
                   >
                     <option value="">System default</option>
+                    {snapshot.inputDeviceId &&
+                      !inputDevices.some(
+                        (device) => device.id === snapshot.inputDeviceId,
+                      ) && (
+                        <option value={snapshot.inputDeviceId}>
+                          System-selected input (current)
+                        </option>
+                      )}
                     {inputDevices.map((device) => (
                       <option key={device.id} value={device.id}>
                         {device.label}
@@ -619,7 +644,7 @@ export function App() {
                     ))}
                   </select>
                 </label>
-              )}
+              }
               {ready && (
                 <p>
                   Stop playback and capture before changing inputs. Completed
@@ -628,15 +653,59 @@ export function App() {
               )}
               {!ready && (
                 <p>
-                  Start audio to select an input. Saved preferences are restored
+                  Start audio to choose an input. Saved preferences are restored
                   when audio starts.
                 </p>
               )}
               {switchPending && (
                 <p role="status">
-                  Changing audio input. Track controls are unavailable until
-                  switching finishes.
+                  Changing input. Track controls are unavailable until switching
+                  finishes.
                 </p>
+              )}
+              {ready && inputDevices.length === 0 && (
+                <p>
+                  No available input devices were listed. Your acknowledged
+                  audio input remains in use. Restart audio to check available
+                  inputs.
+                </p>
+              )}
+              {inputListError && (
+                <>
+                  <p role="alert">{inputListError}</p>
+                  <button
+                    disabled={!ready}
+                    onClick={() => void refreshInputDevices()}
+                  >
+                    Retry listing inputs
+                  </button>
+                </>
+              )}
+              {snapshot.error && (
+                <p>
+                  {snapshot.error}{' '}
+                  {ready
+                    ? 'The acknowledged input is shown; retry selection when playback and capture are stopped.'
+                    : snapshot.status === 'interrupted'
+                      ? 'Use Reinitialize audio to retry with retained recordings.'
+                      : snapshot.status === 'recovering'
+                        ? 'Reinitializing audio; wait for the result.'
+                        : 'Use Start audio to retry after resolving this failure.'}
+                </p>
+              )}
+              {preferenceSave === 'failed' && (
+                <>
+                  <p role="status">
+                    Input preference applies for this visit; could not save in
+                    this browser.
+                  </p>
+                  <button onClick={() => persistPreferences()}>
+                    Retry saving preferences
+                  </button>
+                </>
+              )}
+              {preferenceSave === 'saved' && (
+                <p>Input preference saved in this browser.</p>
               )}
               {ready && (
                 <p>

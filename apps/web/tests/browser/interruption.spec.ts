@@ -45,6 +45,23 @@ test('suspended context retains completed Loop and requires explicit reinitializ
   await expect(
     page.getByRole('status', { name: 'Audio status' }),
   ).toContainText('Audio interrupted');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
+  await expect(
+    page.getByText(
+      'Use Reinitialize audio to retry with retained recordings.',
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Start audio', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Reinitialize audio', exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole('button', { name: 'Close Settings', exact: true })
+    .click();
   await expect(track.getByTestId('track-state')).toHaveText('Stopped');
   await expect(track.getByTestId('loop-length')).toHaveText(length!);
   await expect(page.getByTestId('transport-position')).toHaveText('0');

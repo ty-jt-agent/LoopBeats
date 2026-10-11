@@ -177,7 +177,9 @@ test('a pending input switch gates the combined action until switching completes
   render(<App />);
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
   fireEvent.click(screen.getByRole('tab', { name: 'Audio' }));
-  const selector = await screen.findByRole('combobox', { name: 'Audio input' });
+  const selector = await screen.findByRole('combobox', {
+    name: 'Input device',
+  });
   fireEvent.change(selector, { target: { value: 'usb' } });
   const button = screen.getByRole('button', {
     name: 'Track 1 REC/PLAY — Record',
