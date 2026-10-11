@@ -53,9 +53,7 @@ async function ready(page: import('@playwright/test').Page) {
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(
-    page.getByLabel('Import session', { exact: true }),
-  ).toBeEnabled();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
 }
 async function saved(page: import('@playwright/test').Page) {
   await expect(page.getByTestId('recovery-status')).toContainText('Saved at', {
@@ -72,9 +70,7 @@ async function reloadOffer(page: import('@playwright/test').Page) {
 }
 async function rawExport(page: import('@playwright/test').Page) {
   const download = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   const file = await download;
   return parseSession(
     Uint8Array.from(await readFile((await file.path())!)).buffer,
@@ -96,7 +92,7 @@ test('Later and live actions preserve the previous workspace until explicit reco
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await reloadOffer(page);
@@ -105,11 +101,9 @@ test('Later and live actions preserve the previous workspace until explicit reco
     page.getByRole('complementary', { name: 'Recovery available' }),
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await expect(
-    page.getByLabel('Import session', { exact: true }),
-  ).toBeEnabled();
+  await expect(page.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(6));
   await expect(
     page.locator('.track-strip').nth(0).getByTestId('loop-length'),
@@ -164,7 +158,7 @@ test('failed recovery commit keeps the saved snapshot available for retry', asyn
   });
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await reloadOffer(page);
@@ -213,7 +207,7 @@ test('failed atomic checkpoint retains raw audio and settings from the last succ
   });
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page.evaluate(() =>
@@ -253,7 +247,7 @@ test('Stop audio discard deletes recovery while ordinary reload retains it', asy
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page
@@ -278,7 +272,7 @@ test('another tab cannot overwrite recovery and offers it after ownership transf
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   const other = await context.newPage();
@@ -293,7 +287,7 @@ test('another tab cannot overwrite recovery and offers it after ownership transf
     'another tab',
   );
   await other
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(6));
   await expect(
     other.locator('.track-strip').nth(0).getByTestId('loop-length'),
@@ -305,9 +299,7 @@ test('another tab cannot overwrite recovery and offers it after ownership transf
     other.locator('.track-strip').nth(0).getByTestId('track-state'),
   ).toHaveText('Empty');
   await other.getByRole('button', { name: 'Start audio', exact: true }).click();
-  await expect(
-    other.getByLabel('Import session', { exact: true }),
-  ).toBeEnabled();
+  await expect(other.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
   await page.close();
   await other.getByRole('button', { name: 'Retry recovery ownership' }).click();
   await expect(
@@ -329,7 +321,7 @@ test('CLEAR removes only its recording from the next recovered snapshot', async 
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   const track = page.locator('.track-strip').nth(0);
@@ -391,7 +383,7 @@ test('unfinished One-shot prefix is checkpointed while the completed Loop remain
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(48000));
   await saved(page);
   const second = page.locator('.track-strip').nth(1);
@@ -447,7 +439,7 @@ test('active overdub checkpoints additions and reload offers stopped partial wor
   });
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession(48000));
   await saved(page);
   const first = page.locator('.track-strip').nth(0);
@@ -488,7 +480,7 @@ test('reset checkpoints Empty tracks without resurrecting recordings after reloa
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page
@@ -701,7 +693,7 @@ test('older completed checkpoint without progress metadata still recovers', asyn
 }) => {
   await ready(page);
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await knownSession());
   await saved(page);
   await page.evaluate(async () => {

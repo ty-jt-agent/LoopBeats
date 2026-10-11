@@ -4,11 +4,13 @@ import type { AudioClient } from '@loopbeats/audio-client';
 export function SessionExport({
   client,
   enabled,
+  disabledReason,
   onBusy,
   onStatus,
 }: {
   client: AudioClient;
   enabled: boolean;
+  disabledReason?: string;
   onBusy?: (busy: boolean) => void;
   onStatus?: (status: string) => void;
 }) {
@@ -46,7 +48,7 @@ export function SessionExport({
       anchor.remove();
       // Release after the browser has consumed the click; not an audio timer.
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setMessage('Session ZIP downloaded.');
+      setMessage('ZIP download started.');
     } catch (failure) {
       if (controller.signal.aborted) setMessage('Export canceled.');
       else
@@ -63,18 +65,19 @@ export function SessionExport({
   };
   return (
     <section aria-labelledby="export-heading">
-      <h2 id="export-heading">Session export</h2>
+      <h2 id="export-heading">Save ZIP</h2>
       <p>
-        Export completed recordings and track settings as a ZIP. Unfinished
-        recordings are excluded. Finish overdub before exporting.
+        Download a portable session with all completed track recordings and
+        session settings. An unfinished recording is not included.
       </p>
+      {disabledReason && <p>{disabledReason}</p>}
       <button
         disabled={!enabled || progress !== null}
         onClick={() => {
           void start();
         }}
       >
-        Export session
+        Save ZIP
       </button>
       {progress !== null && (
         <>

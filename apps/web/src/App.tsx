@@ -280,6 +280,22 @@ export function App() {
     } else remove(target);
   };
   const ready = snapshot.status === 'ready';
+  const overdubbing = snapshot.tracks.some(
+    (track) => track.state === 'Overdubbing',
+  );
+  const recording = snapshot.tracks.some(
+    (track) => track.state === 'Recording',
+  );
+  const zipReason = !ready
+    ? 'Start audio to use session files.'
+    : sessionBusy
+      ? 'Wait for the current session operation or cancel it when available.'
+      : switchPending
+        ? 'Wait for the input change to finish.'
+        : overdubbing
+          ? 'Finish or stop overdubbing before using session files.'
+          : '';
+
   const tracksActive = snapshot.tracks.some((track) =>
     ['Recording', 'Playing', 'Overdubbing'].includes(track.state),
   );
@@ -531,6 +547,7 @@ export function App() {
           Session: (
             <>
               {' '}
+              {zipReason && <p>{zipReason}</p>}
               <SessionExport
                 client={client}
                 onBusy={setSessionBusy}
@@ -545,6 +562,11 @@ export function App() {
                 }
               />
               <SessionImport
+                disabledReason={
+                  !zipReason && recording
+                    ? 'Finish or stop recording before loading a session.'
+                    : undefined
+                }
                 client={client}
                 onBusy={setSessionBusy}
                 onStatus={setTransferStatus}

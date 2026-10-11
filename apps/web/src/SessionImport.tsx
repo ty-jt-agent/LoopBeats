@@ -10,6 +10,7 @@ type Confirmation =
 export function SessionImport({
   client,
   enabled,
+  disabledReason,
   onBusy,
   onStatus,
   onConfirmation,
@@ -17,6 +18,7 @@ export function SessionImport({
 }: {
   client: AudioClient;
   enabled: boolean;
+  disabledReason?: string;
   onBusy: (busy: boolean) => void;
   onStatus?: (status: string) => void;
   onConfirmation?: () => void;
@@ -132,14 +134,14 @@ export function SessionImport({
   return (
     <>
       <section aria-label="Session file loading">
-        <h2 id="import-heading">Session import</h2>
+        <h2 id="import-heading">Load ZIP</h2>
         <p>
-          Import a session ZIP. Different sample rates require your consent
-          before conversion. Imported recordings stay stopped. Finish recording
-          before importing.
+          Load a saved session. If current recordings exist, you will confirm
+          before replacing them. Imported recordings start stopped.
         </p>
+        {disabledReason && <p>{disabledReason}</p>}
         <label>
-          Import session
+          Load ZIP
           <input
             type="file"
             accept=".zip,application/zip"

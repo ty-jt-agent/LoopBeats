@@ -38,9 +38,7 @@ test('export keeps running across groups, dismissal and responsive transitions',
     .toBeGreaterThan(12000);
   await track.getByRole('button', { name: /REC\/PLAY/ }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Cancel export' }),
   ).toBeVisible();
@@ -59,11 +57,11 @@ test('export keeps running across groups, dismissal and responsive transitions',
   await page.evaluate(() => window.dispatchEvent(new Event('continue-export')));
   await download;
   await expect(
-    page.getByRole('status').filter({ hasText: 'Session ZIP downloaded.' }),
+    page.getByRole('status').filter({ hasText: 'ZIP download started.' }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'View progress' }).click();
   await expect(
-    page.getByText('Session ZIP downloaded.', { exact: true }),
+    page.getByText('ZIP download started.', { exact: true }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Close Settings' }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Playing');

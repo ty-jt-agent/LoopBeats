@@ -103,7 +103,7 @@ test('conversion consent precedes replacement and converted audio replays throug
   page,
 }, testInfo) => {
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await sourceFile(48000, 48, 24, false));
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -147,9 +147,7 @@ test('conversion consent precedes replacement and converted audio replays throug
   await expect(page.getByTestId('transport-position')).toHaveText('0');
   await expect(page.getByText('Monitoring off', { exact: true })).toBeVisible();
   const downloading = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   const path = testInfo.outputPath('converted.zip');
   await (await downloading).saveAs(path);
   const bytes = await readFile(path);
@@ -263,7 +261,7 @@ test('coefficient allocation begins only after consent and failure preserves the
     });
   });
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await sourceFile(48000, 48, 24, false));
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -303,7 +301,7 @@ test('converts both 60-second tracks into the maximum real AudioClient target ca
   await start(page);
   const began = Date.now();
   await page
-    .getByLabel('Import session', { exact: true })
+    .getByLabel('Load ZIP', { exact: true })
     .setInputFiles(await sourceFile(8000, 480000, 480000, false));
   await expect(conversionDialog(page)).toContainText('8,000 Hz to 192,000 Hz');
   await consent(page);
@@ -352,7 +350,7 @@ test('interruption while conversion consent is open releases the operation witho
     };
   });
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await sourceFile(48000, 48, 24, false));
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -379,7 +377,7 @@ test('canceling active conversion retains the old session and permits retry', as
   page,
 }) => {
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await sourceFile(48000, 48, 24, false));
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
@@ -403,9 +401,7 @@ test('canceling active conversion retains the old session and permits retry', as
     page.locator('.track-strip').nth(0).getByTestId('loop-length'),
   ).toHaveText('48');
   const download = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   const file = await download;
   const parsed = await parseSession(
     Uint8Array.from(await readFile((await file.path())!)).buffer,
@@ -447,7 +443,7 @@ test('empty different-rate session requests consent and rounds its retained cycl
     () => {},
   );
   await start(page);
-  await page.getByLabel('Import session', { exact: true }).setInputFiles({
+  await page.getByLabel('Load ZIP', { exact: true }).setInputFiles({
     name: 'empty.zip',
     mimeType: 'application/zip',
     buffer: Buffer.from(await zip.arrayBuffer()),
@@ -458,9 +454,7 @@ test('empty different-rate session requests consent and rounds its retained cycl
   ).toBeVisible();
   await expect(page.getByRole('dialog')).not.toBeVisible();
   const download = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Export session', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
   const parsed = await parseSession(
     Uint8Array.from(await readFile((await (await download).path())!)).buffer,
     48000,
@@ -473,7 +467,7 @@ test('live mutation while conversion consent is open prevents replacement', asyn
   page,
 }) => {
   await start(page);
-  const input = page.getByLabel('Import session', { exact: true });
+  const input = page.getByLabel('Load ZIP', { exact: true });
   await input.setInputFiles(await sourceFile(48000, 48, 24, false));
   await expect(
     page.getByRole('status').filter({ hasText: 'Session imported.' }),
