@@ -265,6 +265,12 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
   test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const Original = window.AudioWorkletNode;
+    const onmessage = Object.getOwnPropertyDescriptor(
+      MessagePort.prototype,
+      'onmessage',
+    );
+    if (!onmessage?.get || !onmessage.set)
+      throw new Error('MessagePort.onmessage is unavailable');
     window.AudioWorkletNode = class extends Original {
       constructor(
         context: BaseAudioContext,
@@ -272,15 +278,27 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
         options?: AudioWorkletNodeOptions,
       ) {
         super(context, name, options);
-        this.port.addEventListener('message', (event) => {
-          if (event.data?.type !== 'playback-fx-reply') return;
-          event.stopImmediatePropagation();
-          window.dispatchEvent(new Event('held-playback-fx-reply'));
-          window.addEventListener(
-            'deliver-playback-fx-reply',
-            () => this.port.onmessage?.call(this.port, event),
-            { once: true },
-          );
+        const port = this.port;
+        Object.defineProperty(port, 'onmessage', {
+          configurable: true,
+          get: () => onmessage!.get!.call(port),
+          set: (handler: typeof port.onmessage) =>
+            onmessage!.set!.call(
+              port,
+              handler &&
+                function (this: MessagePort, event: MessageEvent) {
+                  if (event.data?.type === 'playback-fx-reply') {
+                    window.dispatchEvent(new Event('held-playback-fx-reply'));
+                    window.addEventListener(
+                      'deliver-playback-fx-reply',
+                      () => handler.call(this, event),
+                      { once: true },
+                    );
+                    return;
+                  }
+                  handler.call(this, event);
+                },
+            ),
         });
       }
     };
