@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { AudioClient } from '@loopbeats/audio-client';
+import type { AudioClient, FxCutoffAdjustment } from '@loopbeats/audio-client';
 import { RecoverySettings } from './RecoverySettings';
 import { recoveryDeletionNotice } from './recovery-deletion-notice';
 type Confirmation =
   | { kind: 'replace' }
   | { kind: 'discard' }
-  | { kind: 'conversion'; sourceRate: number; targetRate: number };
+  | {
+      kind: 'conversion';
+      sourceRate: number;
+      targetRate: number;
+      fxAdjustments: readonly FxCutoffAdjustment[];
+    };
 
 export function SessionImport({
   client,
@@ -112,7 +117,14 @@ export function SessionImport({
           sourceRate: number,
           targetRate: number,
           signal: AbortSignal,
-        ) => confirm(signal, { kind: 'conversion', sourceRate, targetRate }),
+          fxAdjustments: readonly FxCutoffAdjustment[],
+        ) =>
+          confirm(signal, {
+            kind: 'conversion',
+            sourceRate,
+            targetRate,
+            fxAdjustments,
+          }),
       };
       const imported = await (file
         ? client.importSession(file, options)
@@ -217,6 +229,13 @@ export function SessionImport({
               sample values and may affect fidelity. Lowering the sample rate
               loses high-frequency content. Your current session stays intact
               until replacement is confirmed.
+              {confirming.fxAdjustments.map((adjustment) => (
+                <span key={adjustment.scope}>
+                  {' '}
+                  {adjustment.scope} cutoff changes from {adjustment.previousHz}{' '}
+                  Hz to {adjustment.cutoffHz} Hz after confirmation.
+                </span>
+              ))}
             </p>
           ) : confirming?.kind === 'discard' ? (
             <p>

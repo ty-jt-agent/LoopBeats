@@ -1,5 +1,11 @@
 import type { parseSession } from './session-import';
 import { fitsImportMemory, SESSION_AUDIO_BYTES } from './session-limits';
+import {
+  defaultFx,
+  maximumCutoff,
+  type FxCutoffAdjustment,
+} from './session-fx';
+import type { FxConfig } from '@loopbeats/domain';
 
 type Source = Awaited<ReturnType<typeof parseSession>>;
 const PHASES = 1024;
@@ -29,6 +35,21 @@ export function convertSession(
   check();
   if (!Number.isInteger(rate) || rate < 8000 || rate > 192000) rejected();
   const sourceRate = source.manifest.sampleRate;
+  const fxAdjustments: FxCutoffAdjustment[] = [];
+  const adjust = (config: FxConfig | undefined, scope: string): FxConfig => {
+    // Version 1 has no saved cutoff: install target-rate defaults, not a cap warning.
+    if (source.manifest.version === 1) return defaultFx(rate);
+    if (!config) rejected();
+    if (config.type === 'LowPass' && config.cutoffHz > maximumCutoff(rate)) {
+      fxAdjustments.push({
+        scope,
+        previousHz: config.cutoffHz,
+        cutoffHz: maximumCutoff(rate),
+      });
+      return { ...config, cutoffHz: maximumCutoff(rate) };
+    }
+    return { ...config };
+  };
   const length = (frames: number) => {
     const numerator = frames * rate;
     const result = Math.floor(numerator / sourceRate + 0.5);
@@ -45,12 +66,15 @@ export function convertSession(
   const manifest = {
     ...source.manifest,
     sampleRate: rate,
+    inputFx: adjust(source.manifest.inputFx, 'Input'),
     cycleLengthSamples: cycle,
     tracks: source.manifest.tracks.map((t) => ({
       ...t,
+      fx: adjust(t.fx, `Track ${t.id + 1}`),
       lengthSamples:
         t.lengthSamples && t.mode === 'Loop' ? cycle : length(t.lengthSamples),
     })),
+    masterFx: adjust(source.manifest.masterFx, 'Master'),
   };
   const scales = manifest.tracks.map((t, id) =>
     Math.min(
@@ -111,6 +135,7 @@ export function convertSession(
     cachedScale = scales[id];
   }
   return {
+    fxAdjustments,
     manifest,
     async read(
       id: number,

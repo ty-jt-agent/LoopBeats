@@ -28,8 +28,8 @@ export function InputFxPreview({
     <section className="input-fx-preview" aria-labelledby="input-fx-heading">
       <h2 id="input-fx-heading">Input FX preview</h2>
       <p>
-        Preview only: ZIP and recovery do not yet preserve FX. Keep portable
-        backups of recordings.
+        Preview only: ZIP preserves FX; recovery does not yet preserve FX. Keep
+        portable backups of recordings.
       </p>
       {!enabled && <p>Start or reinitialize audio before editing Input FX.</p>}
       <label>

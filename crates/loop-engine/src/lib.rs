@@ -84,6 +84,7 @@ pub struct ImportTrack {
 }
 #[derive(Clone, Copy)]
 pub struct ImportMetadata {
+    pub fx: [FxConfig; 4],
     pub cycle_length: usize,
     pub master_gain: f32,
     pub tracks: [ImportTrack; 2],
@@ -168,6 +169,8 @@ impl LoopEngine {
         self.import = None;
         let capacity = self.tracks[0].recording.capacity();
         if revision == u32::MAX
+            || self.audio_failed
+            || metadata.fx.iter().any(|config| !self.fx[0].valid(*config))
             || revision != self.command_revision
             || metadata.cycle_length > capacity
             || !(0.0..=1.0).contains(&metadata.master_gain)
@@ -244,6 +247,9 @@ impl LoopEngine {
             ..Transport::default()
         };
         self.master_gain = metadata.master_gain;
+        for (slot, config) in self.fx.iter_mut().zip(metadata.fx) {
+            slot.restore(config);
+        }
         self.monitoring = false;
         self.import = None;
         self.mutate();
@@ -329,6 +335,7 @@ impl LoopEngine {
             return None;
         }
         let metadata = ImportMetadata {
+            fx: self.fx.each_ref().map(|slot| slot.snapshot().config),
             cycle_length,
             master_gain: self.master_gain,
             tracks,
@@ -1037,6 +1044,7 @@ mod wasm {
         with_engine(|e| {
             e.begin_import(
                 ImportMetadata {
+                    fx: e.snapshot().fx.map(|slot| slot.config),
                     cycle_length: cycle,
                     master_gain: master,
                     tracks: [
@@ -1064,6 +1072,30 @@ mod wasm {
                 },
                 revision,
             ) as u32
+        })
+    }
+    #[no_mangle]
+    pub extern "C" fn import_fx(scope: usize, kind: u32, cutoff: f64, bypassed: u32) -> u32 {
+        let config = match (kind, bypassed) {
+            (0, 0) if cutoff == 0.0 => FxConfig::None,
+            (1, 0..=1) => FxConfig::LowPass {
+                cutoff_hz: cutoff,
+                bypassed: bypassed != 0,
+            },
+            _ => return 0,
+        };
+        with_engine(|e| {
+            if scope >= 4 || !e.fx[scope].valid(config) {
+                return 0;
+            }
+            let Some((metadata, revision, _)) = &mut e.import else {
+                return 0;
+            };
+            if *revision != e.command_revision {
+                return 0;
+            }
+            metadata.fx[scope] = config;
+            1
         })
     }
     #[no_mangle]

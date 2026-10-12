@@ -402,7 +402,7 @@ test('AudioClient export/import round trip preserves both raw recordings and set
       ) as ArrayBuffer,
       48000,
     );
-    expect(actual.manifest).toEqual(expected.manifest);
+    expect(actual.manifest).toEqual({ ...expected.manifest, version: 2 });
     expect(actual.read(0, 0, 3)).toEqual(new Float32Array([0.25, 0, -0.5]));
     expect(actual.read(1, 0, 2)).toEqual(new Float32Array([-1.5, -1.5]));
     if (pass === 0) {
@@ -495,6 +495,7 @@ test('real worklet transaction restores exact known samples without partial muta
       });
     await command({ type: 'import-begin' });
     const manifest = {
+      version: 1,
       sampleRate: 48000,
       cycleLengthSamples: 3,
       masterGain: 1,

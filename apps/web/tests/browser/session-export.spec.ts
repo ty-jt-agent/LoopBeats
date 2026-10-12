@@ -107,7 +107,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   });
   expect(decoded.manifest).toMatchObject({
     format: 'LoopBeatsSession',
-    version: 1,
+    version: 2,
     cycleLengthSamples: length,
     masterGain: 1,
   });

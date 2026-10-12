@@ -1,9 +1,11 @@
-import type { PlaybackMode } from '@loopbeats/domain';
+import type { FxConfig, PlaybackMode } from '@loopbeats/domain';
 import type { CheckpointInfo } from './session-recovery';
 
 export interface ExportManifest {
   format: 'LoopBeatsSession';
-  version: 1;
+  version: 1 | 2;
+  inputFx?: FxConfig;
+  masterFx?: FxConfig;
   sampleRate: number;
   cycleLengthSamples: number;
   masterGain: number;
@@ -14,6 +16,7 @@ export interface ExportManifest {
     muted: boolean;
     lengthSamples: number;
     audioPath: string | null;
+    fx?: FxConfig;
   }[];
 }
 export interface ExportReply {

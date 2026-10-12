@@ -130,6 +130,31 @@ class LoopProcessor extends AudioWorkletProcessor {
                 )
               )
                 throw new Error('Session cannot be staged.');
+              for (const [scope, config] of [
+                m.inputFx,
+                m.tracks[0].fx,
+                m.tracks[1].fx,
+                m.masterFx,
+              ].entries()) {
+                const restored =
+                  m.version === 1
+                    ? {
+                        type: 'LowPass',
+                        cutoffHz: Math.min(20000, sampleRate * 0.45),
+                        bypassed: true,
+                      }
+                    : config;
+                if (
+                  !restored ||
+                  !this.engine.import_fx(
+                    scope,
+                    restored.type === 'None' ? 0 : 1,
+                    restored.type === 'None' ? 0 : restored.cutoffHz,
+                    restored.type === 'None' ? 0 : Number(restored.bypassed),
+                  )
+                )
+                  throw new Error('Invalid staged FX configuration.');
+              }
             } else if (data.type === 'import-write') {
               if (
                 !(data.samples instanceof Float32Array) ||
@@ -210,6 +235,7 @@ class LoopProcessor extends AudioWorkletProcessor {
               ].includes(this.engine.track_state(id));
               return {
                 id,
+                ...(!checkpoint ? { fx: this.fxConfig(id + 1) } : {}),
                 mode: this.engine.playback_mode(id) === 1 ? 'OneShot' : 'Loop',
                 gain: this.engine.track_gain(id),
                 muted: Boolean(this.engine.track_muted(id)),
@@ -234,7 +260,10 @@ class LoopProcessor extends AudioWorkletProcessor {
             };
             reply.manifest = {
               format: 'LoopBeatsSession',
-              version: 1,
+              version: checkpoint ? 1 : 2,
+              ...(!checkpoint
+                ? { inputFx: this.fxConfig(0), masterFx: this.fxConfig(3) }
+                : {}),
               sampleRate,
               cycleLengthSamples: checkpoint
                 ? this.engine.checkpoint_cycle()
@@ -419,20 +448,23 @@ class LoopProcessor extends AudioWorkletProcessor {
       this.publishSnapshot();
     };
   }
+  fxConfig(scope) {
+    const flags = this.engine.fx_flags(scope);
+    return flags & 1
+      ? {
+          type: 'LowPass',
+          cutoffHz: this.engine.fx_cutoff(scope),
+          bypassed: Boolean(flags & 2),
+        }
+      : { type: 'None' };
+  }
   publishSnapshot() {
     this.port.postMessage({
       type: 'snapshot',
       fx: [0, 1, 2, 3].map((scope) => {
         const flags = this.engine.fx_flags(scope);
         return {
-          config:
-            flags & 1
-              ? {
-                  type: 'LowPass',
-                  cutoffHz: this.engine.fx_cutoff(scope),
-                  bypassed: Boolean(flags & 2),
-                }
-              : { type: 'None' },
+          config: this.fxConfig(scope),
           transitioning: Boolean(flags & 4),
           removing: Boolean(flags & 8),
         };
