@@ -348,6 +348,8 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
     mimeType: 'application/zip',
     buffer: Buffer.from(await blob.arrayBuffer()),
   });
+  const convertSession = page.getByRole('button', { name: 'Convert session' });
+  if (await convertSession.isVisible()) await convertSession.click();
   await expect(
     page.getByRole('alert').filter({ hasText: 'FX edits are still pending' }),
   ).toBeVisible();
