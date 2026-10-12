@@ -275,6 +275,7 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
         this.port.addEventListener('message', (event) => {
           if (event.data?.type !== 'playback-fx-reply') return;
           event.stopImmediatePropagation();
+          window.dispatchEvent(new Event('held-playback-fx-reply'));
           window.addEventListener(
             'deliver-playback-fx-reply',
             () => this.port.onmessage?.call(this.port, event),
@@ -288,8 +289,20 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
   const slider = page.getByRole('slider', { name: 'Track 1 cutoff' });
   await expect(slider).toBeEnabled();
+  const heldReply = page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        window.addEventListener('held-playback-fx-reply', () => resolve(), {
+          once: true,
+        }),
+      ),
+  );
   await slider.fill('300');
+  await heldReply;
   await slider.fill('400'); // Intent remains queued until the public reply is delivered.
+  await expect(
+    page.getByRole('status').filter({ hasText: 'FX command pending' }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const manifest: ExportManifest = {
     format: 'LoopBeatsSession',
