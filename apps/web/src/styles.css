@@ -6,6 +6,26 @@
   text-rendering: optimizeLegibility;
   color-scheme: dark;
 }
+.input-fx-preview {
+  padding: 16px;
+  margin: 16px 0;
+  border: 1px solid #61748c;
+  border-radius: 12px;
+}
+.input-fx-preview select,
+.input-fx-preview button,
+.input-fx-preview input {
+  min-height: 44px;
+  min-width: 44px;
+  max-width: 100%;
+}
+.input-fx-preview label {
+  display: block;
+}
+.input-cutoff input {
+  display: block;
+  width: 100%;
+}
 * {
   box-sizing: border-box;
 }

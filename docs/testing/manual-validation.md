@@ -23,6 +23,17 @@ At #19, map all 50 parent stories to automated or manual evidence. These combine
 
 ## Existing evidence and deferred work
 
+### Effects acceptance backlog (#83)
+
+These cases cover the new FX delivery. They are deferred to #83 and do not reopen
+closed #19 or imply its desktop report validates effects/mobile behavior.
+
+| Case ID | Focused procedure | Status / owner |
+| --- | --- | --- |
+| FX01 | With wired audio, enable Input filtering and monitoring, record a distinctive phrase, bypass, and replay. Confirm baked coloration remains; overdub adds newly processed input without repeatedly filtering the old recording. | Deferred; #83 |
+| FX02 | Edit cutoff/bypass during capture and playback, remove/re-add, mute/STOP/CLEAR/reset, interrupt/reinitialize and switch available inputs. Listen for transition artifacts, follow documented history rules and record unavailable hardware paths. | Deferred; #83 |
+| FX03 | On the final four-filter build run the specified ten-minute load with checkpointing and 30 seconds busy UI on desktop Chrome, iPad Safari and iPhone Safari. Record processing/memory evidence, clicks/dropouts and setup-specific limitations separately from synthetic tests. | Deferred; #83 |
+
 | Evidence | Status | Reuse / limitation |
 | --- | --- | --- |
 | #5 browser audio spike | User-reported manual acceptance | Historical feasibility; use its research record, not a new mandatory per-PR run. |

@@ -1,5 +1,8 @@
 //! Browser-independent sample-authoritative recording and playback.
+mod effects;
 mod loop_buffer;
+use effects::FxSlot;
+pub use effects::{FxConfig, FxError, FxSnapshot};
 use loop_buffer::LoopBuffer;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -35,6 +38,8 @@ pub struct TrackSnapshot {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct EngineSnapshot {
+    pub fx: [FxSnapshot; 4],
+    pub audio_failed: bool,
     pub master_gain: f32,
     pub tracks: [TrackSnapshot; 2],
     pub transport_running: bool,
@@ -59,6 +64,8 @@ struct Track {
     captured: usize,
 }
 pub struct LoopEngine {
+    fx: [FxSlot; 4],
+    audio_failed: bool,
     command_revision: u32,
     staging: [Track; 2],
     import: Option<(ImportMetadata, u32, [usize; 2])>,
@@ -92,11 +99,15 @@ impl LoopEngine {
     }
     pub fn with_sample_rate(sample_rate: u32) -> Self {
         assert!((8_000..=192_000).contains(&sample_rate));
-        Self::with_capacity(sample_rate as usize * 60)
+        Self::with_capacity_and_sample_rate(sample_rate as usize * 60, sample_rate)
     }
     /// Allocate capture storage during initialization, never processing.
     pub fn with_capacity(samples: usize) -> Self {
+        Self::with_capacity_and_sample_rate(samples, 48_000)
+    }
+    pub fn with_capacity_and_sample_rate(samples: usize, sample_rate: u32) -> Self {
         assert!(samples > 0);
+        assert!((8_000..=192_000).contains(&sample_rate));
         let bank = || {
             std::array::from_fn(|_| Track {
                 revision: 0,
@@ -111,6 +122,8 @@ impl LoopEngine {
             })
         };
         Self {
+            fx: std::array::from_fn(|_| FxSlot::new(sample_rate)),
+            audio_failed: false,
             command_revision: 0,
             staging: bank(),
             import: None,
@@ -133,6 +146,14 @@ impl LoopEngine {
     }
     pub fn command_revision(&self) -> u32 {
         self.command_revision
+    }
+    pub fn set_input_fx(&mut self, config: FxConfig) -> Result<(), FxError> {
+        if self.audio_failed {
+            return Err(FxError::Unavailable);
+        }
+        self.fx[0].set(config)?;
+        self.mutate();
+        Ok(())
     }
     fn mutate(&mut self) {
         self.command_revision = self.command_revision.saturating_add(1);
@@ -262,6 +283,9 @@ impl LoopEngine {
     }
     /// Freeze metadata in constant time. Samples are preserved lazily before writes.
     pub fn begin_checkpoint(&mut self) -> Option<ImportMetadata> {
+        if self.audio_failed {
+            return None;
+        }
         if self.import.is_some()
             || self.checkpoint.is_some()
             || self
@@ -500,6 +524,9 @@ impl LoopEngine {
         }
         self.transport = Transport::default();
         self.monitoring = false;
+        for slot in &mut self.fx {
+            slot.reset();
+        }
     }
     /// Stop safely for an input/context interruption without losing completed audio.
     pub fn interrupt(&mut self) {
@@ -509,6 +536,9 @@ impl LoopEngine {
     }
     pub fn stop_transport(&mut self) {
         self.mutate();
+        for slot in &mut self.fx {
+            slot.clear_history();
+        }
         if self.tracks.iter().any(|t| t.state == TrackState::Recording) {
             self.cancel_checkpoint();
         }
@@ -540,6 +570,8 @@ impl LoopEngine {
             .iter()
             .any(|track| matches!(track.state, TrackState::Recording | TrackState::Overdubbing));
         EngineSnapshot {
+            fx: std::array::from_fn(|i| self.fx[i].snapshot()),
+            audio_failed: self.audio_failed,
             master_gain: self.master_gain,
             tracks: std::array::from_fn(|index| {
                 let track = &self.tracks[index];
@@ -596,11 +628,22 @@ impl LoopEngine {
         }
     }
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        if self.audio_failed {
+            output.fill(0.0);
+            return;
+        }
         for (index, destination) in output.iter_mut().enumerate() {
             let advance = self.transport.running;
             let phase = self.cycle_position();
-            let source = input.get(index).copied().unwrap_or(0.0);
-            let mut sample = if self.monitoring { source } else { 0.0 };
+            let Some(source) = self.fx[0].process(input.get(index).copied().unwrap_or(0.0)) else {
+                self.fail_audio(output);
+                return;
+            };
+            let mut sample = if self.monitoring {
+                f64::from(source)
+            } else {
+                0.0
+            };
             for track_id in 0..self.tracks.len() {
                 let live = &self.tracks[track_id];
                 let independent =
@@ -641,10 +684,14 @@ impl LoopEngine {
                         let gain = if track.muted { 0.0 } else { track.gain };
                         if track.state == TrackState::Overdubbing {
                             let mixed = previous + source;
+                            if !mixed.is_finite() {
+                                self.fail_audio(output);
+                                return;
+                            }
                             track.recording.write(phase, mixed);
-                            sample += mixed * gain;
+                            sample += f64::from(mixed) * f64::from(gain);
                         } else {
-                            sample += previous * gain;
+                            sample += f64::from(previous) * f64::from(gain);
                             if track.mode == PlaybackMode::OneShot {
                                 track.one_shot_position += 1;
                                 if track.one_shot_position == track.length {
@@ -655,16 +702,29 @@ impl LoopEngine {
                     }
                 }
             }
-            *destination = (sample * self.master_gain).clamp(-1.0, 1.0);
+            let final_sample = sample * f64::from(self.master_gain);
+            if !final_sample.is_finite() {
+                self.fail_audio(output);
+                return;
+            }
+            *destination = final_sample.clamp(-1.0, 1.0) as f32;
             if advance {
                 self.transport.position += 1;
             }
         }
     }
+    fn fail_audio(&mut self, output: &mut [f32]) {
+        self.cancel_checkpoint();
+        self.cancel_import();
+        self.interrupt();
+        self.audio_failed = true;
+        output.fill(0.0);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use super::{FxConfig, FxError};
     use super::{ImportMetadata, ImportTrack};
     use super::{LoopEngine, PlaybackMode};
     const CAPACITY: usize = 2048;
@@ -687,6 +747,48 @@ mod wasm {
     fn with_engine<T>(operation: impl FnOnce(&mut LoopEngine) -> T) -> T {
         // SAFETY: exports do not overlap and no engine reference escapes.
         unsafe { operation((*core::ptr::addr_of_mut!(ENGINE)).as_mut().unwrap()) }
+    }
+    #[no_mangle]
+    pub extern "C" fn set_input_fx(kind: u32, cutoff_hz: f64, bypassed: u32) -> u32 {
+        let config = match (kind, bypassed) {
+            (0, 0) if cutoff_hz == 0.0 => FxConfig::None,
+            (1, 0 | 1) => FxConfig::LowPass {
+                cutoff_hz,
+                bypassed: bypassed == 1,
+            },
+            _ => return FxError::Invalid as u32,
+        };
+        with_engine(|engine| {
+            engine
+                .set_input_fx(config)
+                .err()
+                .map_or(0, |error| error as u32)
+        })
+    }
+    #[no_mangle]
+    pub extern "C" fn fx_flags(scope: usize) -> u32 {
+        with_engine(|engine| {
+            engine.snapshot().fx.get(scope).map_or(0, |slot| {
+                let flags = match slot.config {
+                    FxConfig::None => 0,
+                    FxConfig::LowPass { bypassed, .. } => 1 | ((bypassed as u32) << 1),
+                };
+                flags | ((slot.transitioning as u32) << 2) | ((slot.removing as u32) << 3)
+            })
+        })
+    }
+    #[no_mangle]
+    pub extern "C" fn fx_cutoff(scope: usize) -> f64 {
+        with_engine(|engine| {
+            engine
+                .snapshot()
+                .fx
+                .get(scope)
+                .map_or(0.0, |slot| match slot.config {
+                    FxConfig::None => 0.0,
+                    FxConfig::LowPass { cutoff_hz, .. } => cutoff_hz,
+                })
+        })
     }
     #[no_mangle]
     pub extern "C" fn record(track_id: usize) {
@@ -1068,12 +1170,17 @@ mod wasm {
         }
         // SAFETY: disjoint static buffers; bounded length; one serialized host
         // owner which must not access buffers during processing.
-        with_engine(|engine| unsafe {
+        let failed = with_engine(|engine| unsafe {
             engine.process(
                 core::slice::from_raw_parts(input_ptr(), frames),
                 core::slice::from_raw_parts_mut(output_ptr(), frames),
             );
+            engine.audio_failed
         });
-        frames
+        if failed {
+            0
+        } else {
+            frames
+        }
     }
 }

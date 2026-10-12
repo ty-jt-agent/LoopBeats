@@ -113,8 +113,12 @@ fn capacity_completion_does_not_invalidate_a_frozen_prefix() {
 fn nonfinite_audio_rejects_the_candidate() {
     let mut engine = LoopEngine::with_capacity(4);
     engine.record(0);
-    engine.process(&[f32::INFINITY], &mut [0.0]);
-    engine.begin_checkpoint().unwrap();
+    let mut output = [1.0];
+    engine.process(&[f32::INFINITY], &mut output);
+    assert_eq!(output, [0.0]);
+    assert!(engine.snapshot().audio_failed);
+    assert_eq!(engine.snapshot().tracks[0].length_samples, 0);
+    assert!(engine.begin_checkpoint().is_none());
     assert!(!engine.read_checkpoint(0, 0, &mut [0.0]));
     assert!(engine.checkpoint_metadata().is_none());
 }
