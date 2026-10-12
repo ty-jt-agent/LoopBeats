@@ -15,6 +15,7 @@ import { SessionImport } from './SessionImport';
 import { recoveryPresentation } from './recovery-presentation';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
 import { InputFxPreview } from './InputFxPreview';
+import { FxPreview } from './FxPreview';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
 type InputDevice = { id: string; label: string };
@@ -541,6 +542,16 @@ export function App() {
             />
           )}
           <div className="settings-launcher">
+            {import.meta.env.VITE_INPUT_FX_PREVIEW === 'true' &&
+              ([1, 2] as const).map((scope) => (
+                <FxPreview
+                  key={scope}
+                  scope={scope}
+                  client={client}
+                  snapshot={snapshot}
+                  enabled={ready && !switchPending}
+                />
+              ))}
             <button
               ref={settingsTrigger}
               aria-expanded={settingsOpen}

@@ -51,6 +51,8 @@ export interface AudioSnapshot {
   readonly fx?: SessionFxSnapshot;
   readonly inputFxPending?: boolean;
   readonly inputFxError?: string | null;
+  readonly playbackFxPending?: readonly boolean[];
+  readonly playbackFxErrors?: readonly (string | null)[];
   readonly inputDeviceId: string | null;
   readonly masterGain: number;
   readonly transport: TransportSnapshot;

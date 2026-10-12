@@ -14,6 +14,12 @@ import { assembleSession, type ExportReply } from './session-export';
 import { parseSession } from './session-import';
 import { convertSession } from './session-conversion';
 import { SessionRecovery, type RecoveryState } from './session-recovery';
+import {
+  PlaybackFxCommands,
+  type PlaybackFxReply,
+  type PlaybackFxScope,
+} from './playback-fx-commands';
+export type { PlaybackFxScope } from './playback-fx-commands';
 type ImportReply = {
   type: 'import-reply';
   requestId: number;
@@ -115,6 +121,23 @@ export class AudioClient {
     config: FxConfig;
   } | null = null;
   private queuedFx: FxConfig | null = null;
+  private playbackFxOwner: Session | null = null;
+  private fxReplacementOwner: Session | null = null;
+  private readonly playbackFx = new PlaybackFxCommands(
+    (scope, requestId, config) =>
+      this.session?.node?.port.postMessage({
+        type: 'set-playback-fx',
+        scope,
+        requestId,
+        config,
+      }),
+    () =>
+      this.publish({
+        ...this.snapshot,
+        playbackFxPending: this.playbackFx.pending,
+        playbackFxErrors: this.playbackFx.errorSnapshot,
+      }),
+  );
   private snapshot = idle();
   private listeners = new Set<() => void>();
   private session: Session | null = null;
@@ -233,6 +256,7 @@ export class AudioClient {
     )
       return;
     this.cancelExport?.();
+    this.playbackFx.cancelQueued();
     this.cancelImport?.();
     ++this.attempt;
     session.interrupted = true;
@@ -254,6 +278,10 @@ export class AudioClient {
     });
   }
   private async release(session: Session) {
+    if (this.playbackFxOwner === session) {
+      this.playbackFx.release();
+      this.playbackFxOwner = null;
+    }
     if (this.fxFlight?.session === session) {
       this.fxFlight = null;
       this.queuedFx = null;
@@ -374,8 +402,16 @@ export class AudioClient {
         node.port.onmessage = ({
           data,
         }: MessageEvent<
-          WorkletSnapshot | ExportReply | ImportReply | InputFxReply
+          | WorkletSnapshot
+          | ExportReply
+          | ImportReply
+          | InputFxReply
+          | PlaybackFxReply
         >) => {
+          if (data.type === 'playback-fx-reply') {
+            if (this.session === current) this.playbackFx.reply(data);
+            return;
+          }
           if (data.type === 'input-fx-reply') {
             if (
               this.session === current &&
@@ -428,6 +464,8 @@ export class AudioClient {
             }
             this.publish({
               fx: data.fx,
+              playbackFxPending: this.playbackFx.pending,
+              playbackFxErrors: this.playbackFx.errorSnapshot,
               inputFxPending: Boolean(this.fxFlight),
               inputFxError: this.snapshot.inputFxError ?? null,
               status: current.recovering
@@ -963,9 +1001,15 @@ export class AudioClient {
         }
       }
       check();
+      this.requireAcknowledgedFx();
       if (!retainRecovery) await this.deletionBarrier();
       else this.recoverySession?.requireOwner();
       check();
+      // Never carry unacknowledged/queued FX intents into a replaced workspace.
+      this.requireAcknowledgedFx();
+      this.fxReplacementOwner = session;
+      this.playbackFx.release();
+      this.queuedFx = null;
       options.onCommitting?.();
       // Commit is the linearization point. Cancellation is available until dispatch.
       const committed = request('import-commit');
@@ -995,6 +1039,7 @@ export class AudioClient {
       options.signal?.removeEventListener('abort', abort);
       this.cancelImport = null;
       this.importOwner = null;
+      if (this.fxReplacementOwner === session) this.fxReplacementOwner = null;
       this.importReply = null;
       rejectWait = undefined;
       cancellation.abort();
@@ -1002,6 +1047,14 @@ export class AudioClient {
     }
   }
   private command(command: AudioCommand): void {
+    if (
+      command.type === 'reset' ||
+      command.type === 'stop-transport' ||
+      command.type === 'interrupt'
+    )
+      this.playbackFx.cancelQueued();
+    if (command.type === 'clear' || command.type === 'stop-track')
+      this.playbackFx.cancelQueued((command.trackId + 1) as PlaybackFxScope);
     if (command.type === 'reset' || command.type === 'stop-transport')
       this.queuedFx = null;
     if (this.snapshot.status === 'ready')
@@ -1011,6 +1064,7 @@ export class AudioClient {
     const session = this.session;
     if (this.snapshot.status !== 'ready' || !session?.node || session.switching)
       return;
+    if (this.fxReplacementOwner === session) return;
     if (
       this.snapshot.fx?.[0].removing ||
       this.fxFlight?.config.type === 'None'
@@ -1034,6 +1088,40 @@ export class AudioClient {
       inputFxError: null,
     });
     session.node.port.postMessage({ type: 'set-input-fx', requestId, config });
+  }
+  setPlaybackFx(scope: PlaybackFxScope, config: FxConfig): void {
+    if (
+      this.snapshot.status !== 'ready' ||
+      !this.session?.node ||
+      this.session.switching
+    )
+      return;
+    if (this.fxReplacementOwner === this.session) return;
+    if (this.playbackFxOwner !== this.session) this.playbackFx.release();
+    this.playbackFxOwner = this.session;
+    this.playbackFx.request(
+      scope,
+      config,
+      Boolean(this.snapshot.fx?.[scope].removing),
+    );
+  }
+  private requireAcknowledgedFx(): void {
+    if (this.fxFlight || this.playbackFx.pending.some(Boolean))
+      throw new Error(
+        'FX edits are still pending. The current session is unchanged. Retry import after acknowledgment.',
+      );
+  }
+  setPlaybackCutoff(scope: PlaybackFxScope, cutoffHz: number): void {
+    const config =
+      this.playbackFx.desired(scope) ?? this.snapshot.fx?.[scope].config;
+    if (config?.type === 'LowPass')
+      this.setPlaybackFx(scope, { ...config, cutoffHz });
+  }
+  setPlaybackBypass(scope: PlaybackFxScope, bypassed: boolean): void {
+    const config =
+      this.playbackFx.desired(scope) ?? this.snapshot.fx?.[scope].config;
+    if (config?.type === 'LowPass')
+      this.setPlaybackFx(scope, { ...config, bypassed });
   }
   private desiredInputFx(): FxConfig | undefined {
     return (

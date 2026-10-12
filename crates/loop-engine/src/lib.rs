@@ -156,6 +156,17 @@ impl LoopEngine {
         self.mutate();
         Ok(())
     }
+    pub fn set_track_fx(&mut self, track_id: usize, config: FxConfig) -> Result<(), FxError> {
+        if self.audio_failed {
+            return Err(FxError::Unavailable);
+        }
+        if track_id >= self.tracks.len() {
+            return Err(FxError::Invalid);
+        }
+        self.fx[track_id + 1].set(config)?;
+        self.mutate();
+        Ok(())
+    }
     fn mutate(&mut self) {
         self.command_revision = self.command_revision.saturating_add(1);
     }
@@ -433,6 +444,9 @@ impl LoopEngine {
             TrackState::Recording => self.finish_recording(track_id, true),
             TrackState::Overdubbing => self.tracks[track_id].state = TrackState::Playing,
             TrackState::Playing | TrackState::Stopped => {
+                if self.tracks[track_id].state == TrackState::Stopped {
+                    self.fx[track_id + 1].clear_history();
+                }
                 self.tracks[track_id].revision = self.tracks[track_id].revision.saturating_add(1);
                 if self.transport.cycle_length == 0 {
                     self.transport.cycle_length = self.tracks[track_id].length;
@@ -459,6 +473,7 @@ impl LoopEngine {
     }
 
     fn finish_recording(&mut self, track_id: usize, play: bool) {
+        self.fx[track_id + 1].clear_history();
         let track = &mut self.tracks[track_id];
         if track.captured == 0 {
             track.state = TrackState::Empty;
@@ -487,6 +502,7 @@ impl LoopEngine {
         let Some(track) = self.tracks.get_mut(track_id) else {
             return;
         };
+        self.fx[track_id + 1].clear_history();
         match track.state {
             TrackState::Recording => self.finish_recording(track_id, false),
             TrackState::Playing | TrackState::Overdubbing => track.state = TrackState::Stopped,
@@ -499,6 +515,9 @@ impl LoopEngine {
             return;
         }
         let track = &mut self.tracks[track_id];
+        if track.state == TrackState::Stopped || track.mode == PlaybackMode::OneShot {
+            self.fx[track_id + 1].clear_history();
+        }
         if track.mode == PlaybackMode::Loop && !self.transport.running {
             if self.transport.cycle_length == 0 {
                 self.transport.cycle_length = track.length;
@@ -516,6 +535,7 @@ impl LoopEngine {
             self.cancel_checkpoint();
         }
         if let Some(track) = self.tracks.get_mut(track_id) {
+            self.fx[track_id + 1].clear_history();
             track.revision = track.revision.saturating_add(1);
             track.state = TrackState::Empty;
             track.length = 0;
@@ -664,6 +684,10 @@ impl LoopEngine {
                     self.freeze_position(track_id, capture_position);
                 }
                 let track = &mut self.tracks[track_id];
+                let active = matches!(track.state, TrackState::Playing | TrackState::Overdubbing);
+                let mut playback = 0.0;
+                let mut ended = false;
+                let gain = if track.muted { 0.0 } else { track.gain };
                 match track.state {
                     TrackState::Empty | TrackState::Stopped => {}
                     TrackState::Recording => {
@@ -688,7 +712,6 @@ impl LoopEngine {
                             phase
                         };
                         let previous = track.recording.read(position);
-                        let gain = if track.muted { 0.0 } else { track.gain };
                         if track.state == TrackState::Overdubbing {
                             let mixed = previous + source;
                             if !mixed.is_finite() {
@@ -696,17 +719,31 @@ impl LoopEngine {
                                 return;
                             }
                             track.recording.write(phase, mixed);
-                            sample += f64::from(mixed) * f64::from(gain);
+                            playback = mixed;
                         } else {
-                            sample += f64::from(previous) * f64::from(gain);
+                            playback = previous;
                             if track.mode == PlaybackMode::OneShot {
                                 track.one_shot_position += 1;
                                 if track.one_shot_position == track.length {
                                     track.state = TrackState::Stopped;
+                                    ended = true;
                                 }
                             }
                         }
                     }
+                }
+                // Inactive slots advance bounded edit/removal ramps with silence,
+                // but contribute nothing. New playback clears history at its boundary.
+                let Some(processed) = self.fx[track_id + 1].process_mix(f64::from(playback)) else {
+                    self.fail_audio(output);
+                    return;
+                };
+                if active {
+                    sample += processed * f64::from(gain);
+                }
+                // The final One-shot sample contributes before its history is retired.
+                if ended {
+                    self.fx[track_id + 1].clear_history();
                 }
             }
             let final_sample = sample * f64::from(self.master_gain);
@@ -768,6 +805,31 @@ mod wasm {
         with_engine(|engine| {
             engine
                 .set_input_fx(config)
+                .err()
+                .map_or(0, |error| error as u32)
+        })
+    }
+    #[no_mangle]
+    pub extern "C" fn set_track_fx(
+        track_id: usize,
+        kind: u32,
+        cutoff_hz: f64,
+        bypassed: u32,
+    ) -> u32 {
+        let config = match (kind, bypassed) {
+            (0, 0) if cutoff_hz == 0.0 => FxConfig::None,
+            (1, 0 | 1) => FxConfig::LowPass {
+                cutoff_hz,
+                bypassed: bypassed == 1,
+            },
+            _ => return FxError::Invalid as u32,
+        };
+        if track_id >= 2 {
+            return FxError::Invalid as u32;
+        }
+        with_engine(|engine| {
+            engine
+                .set_track_fx(track_id, config)
                 .err()
                 .map_or(0, |error| error as u32)
         })

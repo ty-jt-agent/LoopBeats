@@ -71,3 +71,33 @@ fn input_fx_commands_capture_ramps_and_retirement_never_allocate() {
     assert!(enabled && removed);
     assert_eq!(ALLOCATIONS.with(Cell::get), 0);
 }
+
+#[test]
+fn track_fx_playback_edits_mute_retirement_and_lifecycle_never_allocate() {
+    let mut engine = LoopEngine::with_capacity(1024);
+    engine.record(0);
+    engine.process(&[0.25; 512], &mut [0.0; 512]);
+    engine.record(0);
+    let mut output = [0.0; 512];
+    ALLOCATIONS.with(|count| count.set(0));
+    MEASURING.with(|active| active.set(true));
+    let accepted = engine
+        .set_track_fx(
+            0,
+            FxConfig::LowPass {
+                cutoff_hz: 1000.0,
+                bypassed: false,
+            },
+        )
+        .is_ok();
+    engine.set_track_mute(0, true);
+    engine.process(&[], &mut output);
+    let removed = engine.set_track_fx(0, FxConfig::None).is_ok();
+    engine.stop_track(0);
+    engine.clear(0);
+    engine.process(&[], &mut output);
+    engine.reset();
+    MEASURING.with(|active| active.set(false));
+    assert!(accepted && removed);
+    assert_eq!(ALLOCATIONS.with(Cell::get), 0);
+}

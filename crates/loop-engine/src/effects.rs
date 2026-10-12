@@ -177,6 +177,11 @@ impl FxSlot {
         self.coefficients = [b0, 2.0 * b0, b0, -2.0 * cosine / a0, (1.0 - alpha) / a0];
     }
     pub fn process(&mut self, source: f32) -> Option<f32> {
+        let output = self.process_mix(f64::from(source))? as f32;
+        output.is_finite().then_some(output)
+    }
+    /// Preserve mix headroom until scope gains and the final output clamp.
+    pub fn process_mix(&mut self, source: f64) -> Option<f64> {
         if !source.is_finite() {
             return None;
         }
@@ -188,7 +193,7 @@ impl FxSlot {
             self.update_coefficients();
         }
         let [b0, b1, b2, a1, a2] = self.coefficients;
-        let dry = f64::from(source);
+        let dry = source;
         let filtered = b0 * dry + self.history[0];
         self.history = [
             b1 * dry - a1 * filtered + self.history[1],
@@ -198,7 +203,7 @@ impl FxSlot {
         let output = if wet == 0.0 {
             source
         } else {
-            (dry + (filtered - dry) * wet) as f32
+            dry + (filtered - dry) * wet
         };
         if !output.is_finite()
             || !filtered.is_finite()
