@@ -10,8 +10,8 @@ export function InputFxPreview(
       scope={0}
       notice={
         <p>
-          Preview only: ZIP preserves FX; recovery does not yet preserve FX. Keep
-          portable backups of recordings.
+          Preview only: ZIP preserves FX; recovery does not yet preserve FX.
+          Keep portable backups of recordings.
         </p>
       }
     />
