@@ -48,6 +48,39 @@ test('conversion preserves DC and configuration with independent length rounding
     expect(value).toBeCloseTo(0.25, 6);
 });
 
+test('conversion reports scoped cutoff caps and preserves supported Hz without mutating source', async () => {
+  const source = await fixture(48000, 48, () => 0.25);
+  source.manifest.version = 2;
+  source.manifest.inputFx = {
+    type: 'LowPass',
+    cutoffHz: 15000,
+    bypassed: false,
+  };
+  source.manifest.masterFx = { type: 'None' };
+  source.manifest.tracks[0].fx = {
+    type: 'LowPass',
+    cutoffHz: 1000,
+    bypassed: false,
+  };
+  source.manifest.tracks[1].fx = {
+    type: 'LowPass',
+    cutoffHz: 20000,
+    bypassed: true,
+  };
+  const converted = convertSession(source, 8000, () => {});
+  expect(converted.fxAdjustments).toEqual([
+    { scope: 'Input', previousHz: 15000, cutoffHz: 3600 },
+    { scope: 'Track 2', previousHz: 20000, cutoffHz: 3600 },
+  ]);
+  expect(converted.manifest.tracks[0].fx).toEqual(source.manifest.tracks[0].fx);
+  expect(converted.manifest.inputFx).toEqual({
+    type: 'LowPass',
+    cutoffHz: 3600,
+    bypassed: false,
+  });
+  expect(source.manifest.inputFx.cutoffHz).toBe(15000);
+});
+
 async function all(converted: ReturnType<typeof convertSession>, id = 0) {
   const result: number[] = [];
   for (

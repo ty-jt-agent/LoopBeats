@@ -1,5 +1,6 @@
 import type { ExportManifest } from './session-export';
 import { fitsImportMemory, SESSION_AUDIO_BYTES } from './session-limits';
+import { defaultFx, parseUniqueJson, validFx } from './session-fx';
 
 const LIMIT = 96 * 1024 * 1024;
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -128,7 +129,7 @@ export async function parseSession(
   }
   if (cursor !== end || local !== directory || !files.has('session.json'))
     invalid();
-  const manifest = JSON.parse(
+  const manifest = parseUniqueJson(
     decoder.decode(files.get('session.json')),
   ) as ExportManifest;
   if (!manifest || typeof manifest !== 'object') invalid();
@@ -139,10 +140,11 @@ export async function parseSession(
     'cycleLengthSamples',
     'masterGain',
     'tracks',
+    ...(manifest.version === 2 ? ['inputFx', 'masterFx'] : []),
   ]);
   if (
     manifest.format !== 'LoopBeatsSession' ||
-    manifest.version !== 1 ||
+    ![1, 2].includes(manifest.version) ||
     !integer(manifest.sampleRate, 192000) ||
     manifest.sampleRate < 8000 ||
     !integer(manifest.cycleLengthSamples, manifest.sampleRate * 60) ||
@@ -151,11 +153,27 @@ export async function parseSession(
     manifest.tracks.length !== 2
   )
     invalid();
+  if (
+    manifest.version === 2 &&
+    (!validFx(manifest.inputFx, manifest.sampleRate) ||
+      !validFx(manifest.masterFx, manifest.sampleRate))
+  )
+    invalid();
   let total = 0;
   const waves: (DataView | null)[] = [];
   for (const [id, track] of manifest.tracks.entries()) {
     if (!track || typeof track !== 'object') invalid();
-    keys(track, ['id', 'mode', 'gain', 'muted', 'lengthSamples', 'audioPath']);
+    keys(track, [
+      'id',
+      'mode',
+      'gain',
+      'muted',
+      'lengthSamples',
+      'audioPath',
+      ...(manifest.version === 2 ? ['fx'] : []),
+    ]);
+    if (manifest.version === 2 && !validFx(track.fx, manifest.sampleRate))
+      invalid();
     if (
       track.id !== id ||
       !['Loop', 'OneShot'].includes(track.mode) ||
@@ -218,6 +236,13 @@ export async function parseSession(
       `Session sample rate is ${manifest.sampleRate} Hz; current audio is ${rate} Hz. Sample-rate conversion is not available yet. The current session is unchanged.`,
     );
   check();
+  // Migration is explicit and happens only after complete source validation.
+  if (manifest.version === 1) {
+    manifest.inputFx = defaultFx(manifest.sampleRate);
+    manifest.masterFx = defaultFx(manifest.sampleRate);
+    for (const track of manifest.tracks)
+      track.fx = defaultFx(manifest.sampleRate);
+  }
   return {
     byteLength: buffer.byteLength,
     manifest,

@@ -38,7 +38,12 @@ test('same-rate exported archive preserves samples and rejects damaged audio', a
   );
   const bytes = await archive.arrayBuffer();
   const decoded = await parseSession(bytes, 48000);
-  expect(decoded.manifest).toEqual(manifest);
+  expect(decoded.manifest).toMatchObject(manifest);
+  expect(decoded.manifest.inputFx).toEqual({
+    type: 'LowPass',
+    cutoffHz: 20000,
+    bypassed: true,
+  });
   expect(decoded.read(1, 0, 2)).toEqual(new Float32Array([-1.5, 0.25]));
   await expect(parseSession(bytes, 44100)).rejects.toThrow('sample rate');
   const damaged = bytes.slice(0);
@@ -66,6 +71,7 @@ function emptyManifest(): ExportManifest {
 function independentManifestArchive(
   source: ExportManifest,
   jsonSize = 0,
+  json = JSON.stringify(source),
 ): ArrayBuffer {
   // Python creates the ZIP independently. Explicit UTF-8 flags match the accepted format.
   const file = execFileSync('python', [
@@ -80,7 +86,7 @@ b=bytearray(out.getvalue()); c=struct.unpack_from('<I',b,len(b)-6)[0]
 struct.pack_into('<H',b,6,0x800); struct.pack_into('<H',b,c+8,0x800)
 sys.stdout.buffer.write(b)
 `,
-    JSON.stringify(source),
+    json,
     String(jsonSize),
   ]);
   return file.buffer.slice(
@@ -88,6 +94,66 @@ sys.stdout.buffer.write(b)
     file.byteOffset + file.length,
   ) as ArrayBuffer;
 }
+
+function effectsManifest(): ExportManifest {
+  const manifest = emptyManifest();
+  manifest.version = 2;
+  manifest.inputFx = { type: 'LowPass', cutoffHz: 1200.25, bypassed: false };
+  manifest.masterFx = { type: 'None' };
+  manifest.tracks[0].fx = { type: 'LowPass', cutoffHz: 20000, bypassed: true };
+  manifest.tracks[1].fx = { type: 'None' };
+  return manifest;
+}
+
+test('independent v2 archive preserves every scoped configuration, including Empty tracks', async () => {
+  const manifest = effectsManifest();
+  expect(
+    (await parseSession(independentManifestArchive(manifest), 48000)).manifest,
+  ).toEqual(manifest);
+});
+
+test.each([
+  { type: 'Delay' },
+  { type: 'None', bypassed: true },
+  { type: 'LowPass', cutoffHz: 0, bypassed: true },
+  { type: 'LowPass', cutoffHz: 20001, bypassed: true },
+  { type: 'LowPass', cutoffHz: null, bypassed: true },
+  { type: 'LowPass', cutoffHz: 1000, bypassed: 1 },
+  { type: 'LowPass', cutoffHz: 1000 },
+  { type: 'LowPass', cutoffHz: 1000, bypassed: false, scope: 'Input' },
+])('rejects invalid v2 FX %j in every scope', async (bad) => {
+  for (const scope of [0, 1, 2, 3]) {
+    const source = effectsManifest();
+    const config = bad as unknown as NonNullable<ExportManifest['inputFx']>;
+    if (scope === 0) source.inputFx = config;
+    else if (scope === 3) source.masterFx = config;
+    else source.tracks[scope - 1].fx = config;
+    await expect(
+      parseSession(independentManifestArchive(source), 48000),
+    ).rejects.toThrow('Invalid');
+  }
+});
+
+test('rejects missing, unknown and duplicate v2 fields before replacement', async () => {
+  const source = effectsManifest();
+  delete source.inputFx;
+  await expect(
+    parseSession(independentManifestArchive(source), 48000),
+  ).rejects.toThrow();
+  const valid = effectsManifest();
+  for (const json of [
+    JSON.stringify(valid).replace('"version":2', '"version":3'),
+    JSON.stringify(valid).replace(
+      '"cutoffHz":1200.25',
+      '"cutoffHz":1200.25,"cutoffHz":1000',
+    ),
+    JSON.stringify(valid).replace('"cutoffHz":1200.25', '"cutoffHz":1e999'),
+    JSON.stringify(valid).replace('"inputFx":', '"wrongScope":'),
+  ])
+    await expect(
+      parseSession(independentManifestArchive(valid, 0, json), 48000),
+    ).rejects.toThrow();
+});
 
 test.each([7999, 192001, 48000.5])(
   'rejects unsupported source rate %s in a valid ZIP',
@@ -106,7 +172,7 @@ test('accepts exactly 64 KiB JSON and rejects one byte more in independently cre
     independentManifestArchive(source, 65536),
     48000,
   );
-  expect(accepted.manifest).toEqual(source);
+  expect(accepted.manifest).toMatchObject(source);
   await expect(
     parseSession(independentManifestArchive(source, 65537), 48000),
   ).rejects.toThrow('Invalid');
@@ -128,9 +194,9 @@ test.each([8000, 192000])(
     const source = emptyManifest();
     source.sampleRate = rate;
     source.cycleLengthSamples = rate * 60;
-    expect((await parseSession(await encode(source), rate)).manifest).toEqual(
-      source,
-    );
+    expect(
+      (await parseSession(await encode(source), rate)).manifest,
+    ).toMatchObject(source);
   },
 );
 

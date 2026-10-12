@@ -84,6 +84,22 @@ impl FxSlot {
     pub fn maximum(sample_rate: u32) -> f64 {
         20_000.0_f64.min(f64::from(sample_rate) * 0.45)
     }
+    pub fn valid(&self, config: FxConfig) -> bool {
+        match config {
+            FxConfig::None => true,
+            FxConfig::LowPass { cutoff_hz, .. } => {
+                cutoff_hz.is_finite()
+                    && (20.0..=Self::maximum(self.sample_rate)).contains(&cutoff_hz)
+            }
+        }
+    }
+    /// Restoration installs accepted targets directly with no audible edit ramp.
+    pub fn restore(&mut self, config: FxConfig) {
+        debug_assert!(self.valid(config));
+        *self = Self::new(self.sample_rate);
+        self.set(config).expect("validated restored FX");
+        self.clear_history();
+    }
     pub fn snapshot(&self) -> FxSnapshot {
         FxSnapshot {
             config: self.config,
@@ -92,12 +108,8 @@ impl FxSlot {
         }
     }
     pub fn set(&mut self, config: FxConfig) -> Result<(), FxError> {
-        if let FxConfig::LowPass { cutoff_hz, .. } = config {
-            if !cutoff_hz.is_finite()
-                || !(20.0..=Self::maximum(self.sample_rate)).contains(&cutoff_hz)
-            {
-                return Err(FxError::Invalid);
-            }
+        if !self.valid(config) {
+            return Err(FxError::Invalid);
         }
         if self.removing {
             return Err(FxError::Busy);

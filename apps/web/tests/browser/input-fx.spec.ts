@@ -1,4 +1,11 @@
 import { expect, test } from '@playwright/test';
+import {
+  assembleSession,
+  type ExportManifest,
+} from '../../../../packages/audio-client/src/session-export';
+import { parseSession } from '../../../../packages/audio-client/src/session-import';
+import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 
 test.use({
   launchOptions: {
@@ -7,6 +14,294 @@ test.use({
       '--use-fake-ui-for-media-stream',
     ],
   },
+});
+
+async function fxArchive() {
+  const manifest: ExportManifest = {
+    format: 'LoopBeatsSession',
+    version: 2,
+    sampleRate: 48000,
+    cycleLengthSamples: 4,
+    masterGain: 0.75,
+    inputFx: { type: 'LowPass', cutoffHz: 15000, bypassed: false },
+    masterFx: { type: 'None' },
+    tracks: [0, 1].map((id) => ({
+      id,
+      mode: 'Loop',
+      gain: 1,
+      muted: false,
+      lengthSamples: id === 0 ? 4 : 0,
+      audioPath: id === 0 ? 'tracks/0.wav' : null,
+      fx:
+        id === 0
+          ? { type: 'None' }
+          : { type: 'LowPass', cutoffHz: 18000, bypassed: true },
+    })),
+  };
+  const blob = await assembleSession(
+    manifest,
+    async () => new Float32Array([0.5, -1.5, 0.25, 0]),
+    () => {},
+    () => {},
+  );
+  return {
+    manifest,
+    file: {
+      name: 'fx.zip',
+      mimeType: 'application/zip',
+      buffer: Buffer.from(await blob.arrayBuffer()),
+    },
+  };
+}
+
+test('gated Save/Load ZIP restores all scopes and preserves independently decoded raw WAV samples', async ({
+  page,
+}, info) => {
+  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await page.addInitScript(() => {
+    const Original = window.AudioContext;
+    window.AudioContext = class extends Original {
+      constructor(options?: AudioContextOptions) {
+        super({ ...options, sampleRate: 48000 });
+      }
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Enable Input filter' }),
+  ).toBeEnabled();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const fixture = await fxArchive();
+  await page
+    .getByLabel('Load ZIP', { exact: true })
+    .setInputFiles(fixture.file);
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Session imported.' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Bypass Input filter' }),
+  ).toBeEnabled();
+  await expect(
+    page.locator('.track-strip').nth(0).getByTestId('track-state'),
+  ).toHaveText('Stopped');
+  await expect(page.getByText('Monitoring off', { exact: true })).toBeVisible();
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
+  const path = info.outputPath('fx.zip');
+  await (await downloading).saveAs(path);
+  const independent = JSON.parse(
+    execFileSync(
+      'python',
+      [
+        '-c',
+        "import zipfile,json,struct,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; w=z.read('tracks/0.wav'); print(json.dumps({'manifest':json.loads(z.read('session.json')),'samples':struct.unpack_from('<4f',w,56)}))",
+        path,
+      ],
+      { encoding: 'utf8' },
+    ),
+  ) as { manifest: ExportManifest; samples: number[] };
+  expect(independent.manifest).toEqual(fixture.manifest);
+  expect(independent.samples).toEqual([0.5, -1.5, 0.25, 0]);
+  await page.getByRole('button', { name: 'Bypass Input filter' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Enable Input filter' }),
+  ).toBeEnabled();
+  await page
+    .getByLabel('Load ZIP', { exact: true })
+    .setInputFiles(fixture.file);
+  const replacement = page.getByRole('dialog', {
+    name: 'Replace current session?',
+  });
+  await expect(replacement).toBeVisible();
+  await replacement
+    .getByRole('button', { name: 'Cancel', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Enable Input filter' }),
+  ).toBeEnabled();
+  const buffer = await readFile(path);
+  const parsed = await parseSession(
+    buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength,
+    ),
+    48000,
+  );
+  expect([...parsed.read(0, 0, 4)]).toEqual(independent.samples);
+});
+
+test('gated conversion warns about scoped cutoff caps; cancel and late FX edits preserve live session', async ({
+  page,
+}) => {
+  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await page.addInitScript(() => {
+    const Original = window.AudioContext;
+    window.AudioContext = class extends Original {
+      constructor(options?: AudioContextOptions) {
+        super({ ...options, sampleRate: 32000 });
+      }
+    };
+    const send = MessagePort.prototype.postMessage;
+    let port: MessagePort | undefined;
+    MessagePort.prototype.postMessage = function (
+      message,
+      transfer?: Transferable[] | StructuredSerializeOptions,
+    ) {
+      // The fixture retains the public command port to send a live edit during consent.
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      if (message?.type === 'set-input-fx') port = this;
+      return Reflect.apply(send, this, [message, transfer ?? []]);
+    };
+    window.addEventListener('edit-fx-during-conversion', () =>
+      port?.postMessage({
+        type: 'set-input-fx',
+        requestId: 999999,
+        config: { type: 'LowPass', cutoffHz: 1000, bypassed: false },
+      }),
+    );
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Enable Input filter' }),
+  ).toBeEnabled();
+  await page.getByRole('slider', { name: 'Input cutoff' }).fill('500');
+  await expect(page.getByRole('slider', { name: 'Input cutoff' })).toHaveValue(
+    '500',
+  );
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const fixture = await fxArchive();
+  await page
+    .getByLabel('Load ZIP', { exact: true })
+    .setInputFiles(fixture.file);
+  const conversion = page.getByRole('dialog', {
+    name: 'Convert sample rate?',
+  });
+  await expect(conversion).toContainText(
+    'Input cutoff changes from 15000 Hz to 14400 Hz',
+  );
+  await expect(conversion).toContainText(
+    'Track 2 cutoff changes from 18000 Hz to 14400 Hz',
+  );
+  await conversion.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(
+    page.locator('.track-strip').nth(0).getByTestId('track-state'),
+  ).toHaveText('Empty');
+  await page
+    .getByLabel('Load ZIP', { exact: true })
+    .setInputFiles(fixture.file);
+  await expect(conversion).toBeVisible();
+  // A real FX command at the public worklet seam, while the modal is awaiting consent.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('edit-fx-during-conversion'));
+  });
+  await conversion.getByRole('button', { name: 'Convert session' }).click();
+  await expect(
+    page
+      .getByRole('alert')
+      .filter({ hasText: 'Session changed during import' }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.track-strip').nth(0).getByTestId('track-state'),
+  ).toHaveText('Empty');
+  await page
+    .getByLabel('Load ZIP', { exact: true })
+    .setInputFiles(fixture.file);
+  await expect(conversion).toBeVisible();
+  await conversion.getByRole('button', { name: 'Convert session' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Session imported.' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Bypass Input filter' }),
+  ).toBeEnabled();
+});
+
+test('worklet exports accepted targets during removal and freezes metadata across later edits', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const context = new OfflineAudioContext(1, 256, 48000);
+    await context.audioWorklet.addModule('/audio/processor.js');
+    const module = await WebAssembly.compile(
+      await (await fetch('/audio/loop-engine.wasm')).arrayBuffer(),
+    );
+    const node = new AudioWorkletNode(context, 'loop-engine', {
+      processorOptions: { module },
+    });
+    let sequence = 0;
+    const command = (data: object, expected = 'snapshot') =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        node.port.onmessage = ({ data: reply }) => {
+          if (reply.type === expected) resolve(reply);
+        };
+        node.port.postMessage(data);
+      });
+    const fx = (config: object) =>
+      command(
+        { type: 'set-input-fx', requestId: ++sequence, config },
+        'input-fx-reply',
+      );
+    await command({ type: 'record', trackId: 0 });
+    const buffer = context.createBuffer(1, 256, 48000);
+    buffer.getChannelData(0).fill(0.25);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(node).connect(context.destination);
+    source.start();
+    await context.startRendering();
+    await command({ type: 'record', trackId: 0 });
+    await fx({ type: 'LowPass', cutoffHz: 1000, bypassed: false });
+    const token = ++sequence;
+    const frozen = await command(
+      { type: 'export-begin', requestId: token },
+      'export-reply',
+    );
+    await fx({ type: 'LowPass', cutoffHz: 2000, bypassed: true });
+    const audio = await command(
+      {
+        type: 'export-read',
+        requestId: ++sequence,
+        token,
+        trackId: 0,
+        offset: 0,
+        frames: 256,
+      },
+      'export-reply',
+    );
+    await command(
+      { type: 'export-finish', requestId: ++sequence, token },
+      'export-reply',
+    );
+    await fx({ type: 'None' });
+    const removing = await command({ type: 'snapshot' });
+    const removed = await command(
+      { type: 'export-begin', requestId: ++sequence },
+      'export-reply',
+    );
+    return {
+      frozen,
+      samples: [...(audio.samples as Float32Array)],
+      removing,
+      removed,
+    };
+  });
+  expect(result.frozen).toMatchObject({
+    manifest: {
+      version: 2,
+      inputFx: { type: 'LowPass', cutoffHz: 1000, bypassed: false },
+    },
+  });
+  expect(result.samples).toEqual(Array(256).fill(0.25));
+  expect((result.removing.fx as object[])[0]).toMatchObject({
+    config: { type: 'None' },
+    removing: true,
+  });
+  expect(result.removed).toMatchObject({
+    manifest: { inputFx: { type: 'None' } },
+  });
 });
 
 test('normal production does not expose unfinished Input FX', async ({
@@ -36,7 +331,7 @@ test('gated Input preview acknowledges cutoff, bypass and removal through real a
     preview.getByRole('button', { name: 'Enable Input filter' }),
   ).toBeDisabled();
   await expect(preview).toContainText(
-    'ZIP and recovery do not yet preserve FX',
+    'ZIP preserves FX; recovery does not yet preserve FX',
   );
   await page.getByRole('button', { name: 'Start audio' }).click();
   await expect(

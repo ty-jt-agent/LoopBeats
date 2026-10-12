@@ -1,3 +1,4 @@
+export type { FxCutoffAdjustment } from './session-fx';
 import type {
   FxConfig,
   SessionFxSnapshot,
@@ -796,6 +797,7 @@ export class AudioClient {
         sourceRate: number,
         targetRate: number,
         signal: AbortSignal,
+        fxAdjustments: readonly import('./session-fx').FxCutoffAdjustment[],
       ) => Promise<boolean>;
     },
   ): Promise<boolean> {
@@ -925,6 +927,7 @@ export class AudioClient {
             parsed.manifest.sampleRate,
             session.context.sampleRate,
             cancellation.signal,
+            planned.fxAdjustments,
           ),
         );
         check();
