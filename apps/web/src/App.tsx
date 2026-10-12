@@ -14,6 +14,7 @@ import { SessionExport } from './SessionExport';
 import { SessionImport } from './SessionImport';
 import { recoveryPresentation } from './recovery-presentation';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
+import { InputFxPreview } from './InputFxPreview';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
 type InputDevice = { id: string; label: string };
@@ -532,6 +533,13 @@ export function App() {
               />
             ))}
           </div>
+          {import.meta.env.VITE_INPUT_FX_PREVIEW === 'true' && (
+            <InputFxPreview
+              client={client}
+              snapshot={snapshot}
+              enabled={ready && !switchPending}
+            />
+          )}
           <div className="settings-launcher">
             <button
               ref={settingsTrigger}

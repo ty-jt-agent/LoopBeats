@@ -35,6 +35,41 @@ class LoopProcessor extends AudioWorkletProcessor {
     this.exportSession = null;
     this.importSession = null;
     this.port.onmessage = ({ data }) => {
+      if (data.type === 'set-input-fx') {
+        let error;
+        const config = data.config;
+        const valid =
+          config &&
+          typeof config === 'object' &&
+          ((config.type === 'None' && Object.keys(config).length === 1) ||
+            (config.type === 'LowPass' &&
+              Object.keys(config).length === 3 &&
+              Number.isFinite(config.cutoffHz) &&
+              typeof config.bypassed === 'boolean'));
+        const result = this.failed
+          ? 3
+          : !valid
+            ? 1
+            : this.engine.set_input_fx(
+                config.type === 'None' ? 0 : 1,
+                config.type === 'None' ? 0 : config.cutoffHz,
+                config.type === 'None' ? 0 : Number(config.bypassed),
+              );
+        if (result)
+          error = [
+            '',
+            'Invalid Input FX configuration. The previous setting is retained.',
+            'Input FX is being removed. Try again after the transition.',
+            'Audio processing is unavailable.',
+          ][result];
+        this.publishSnapshot();
+        this.port.postMessage({
+          type: 'input-fx-reply',
+          requestId: data.requestId,
+          error,
+        });
+        return;
+      }
       const checkpoint = data.type.startsWith('checkpoint-');
       if (checkpoint)
         data = { ...data, type: data.type.replace('checkpoint-', 'export-') };
@@ -387,6 +422,21 @@ class LoopProcessor extends AudioWorkletProcessor {
   publishSnapshot() {
     this.port.postMessage({
       type: 'snapshot',
+      fx: [0, 1, 2, 3].map((scope) => {
+        const flags = this.engine.fx_flags(scope);
+        return {
+          config:
+            flags & 1
+              ? {
+                  type: 'LowPass',
+                  cutoffHz: this.engine.fx_cutoff(scope),
+                  bypassed: Boolean(flags & 2),
+                }
+              : { type: 'None' },
+          transitioning: Boolean(flags & 4),
+          removing: Boolean(flags & 8),
+        };
+      }),
       recordingRevisions: [0, 1].map((id) =>
         this.engine.recording_revision(id),
       ),
@@ -433,6 +483,8 @@ class LoopProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < count; i++) this.input[i] = source?.[i] ?? 0;
     if (this.engine.process(count) !== count) {
       this.failed = true;
+      for (let channel = 0; channel < channels.length; channel++)
+        channels[channel].fill(0);
       return false;
     }
     let inputPeak = 0,

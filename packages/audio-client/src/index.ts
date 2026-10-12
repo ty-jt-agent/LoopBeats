@@ -1,4 +1,6 @@
 import type {
+  FxConfig,
+  SessionFxSnapshot,
   AudioCommand,
   AudioSnapshot,
   TrackSnapshot,
@@ -16,6 +18,11 @@ type ImportReply = {
   requestId: number;
   error?: string;
   hasRecordings?: boolean;
+};
+type InputFxReply = {
+  type: 'input-fx-reply';
+  requestId: number;
+  error?: string;
 };
 
 type Session = {
@@ -35,6 +42,7 @@ type Session = {
   switchToken?: number;
 };
 type WorkletSnapshot = {
+  fx?: SessionFxSnapshot;
   recordingRevisions: number[];
   masterGain: number;
   type: 'snapshot';
@@ -99,6 +107,13 @@ type DestructiveResult =
 
 /** Owns browser audio resources; React consumes immutable engine/lifecycle snapshots. */
 export class AudioClient {
+  private fxSequence = 0;
+  private fxFlight: {
+    session: Session;
+    requestId: number;
+    config: FxConfig;
+  } | null = null;
+  private queuedFx: FxConfig | null = null;
   private snapshot = idle();
   private listeners = new Set<() => void>();
   private session: Session | null = null;
@@ -238,6 +253,10 @@ export class AudioClient {
     });
   }
   private async release(session: Session) {
+    if (this.fxFlight?.session === session) {
+      this.fxFlight = null;
+      this.queuedFx = null;
+    }
     if (this.exportOwner === session) this.cancelExport?.();
     if (this.importOwner === session) this.cancelImport?.();
     clearInterval(session.interval);
@@ -353,7 +372,28 @@ export class AudioClient {
         };
         node.port.onmessage = ({
           data,
-        }: MessageEvent<WorkletSnapshot | ExportReply | ImportReply>) => {
+        }: MessageEvent<
+          WorkletSnapshot | ExportReply | ImportReply | InputFxReply
+        >) => {
+          if (data.type === 'input-fx-reply') {
+            if (
+              this.session === current &&
+              this.fxFlight?.session === current &&
+              this.fxFlight.requestId === data.requestId
+            ) {
+              this.fxFlight = null;
+              const queued = this.queuedFx;
+              this.queuedFx = null;
+              this.publish({
+                ...this.snapshot,
+                inputFxPending: false,
+                inputFxError: data.error ?? null,
+              });
+              // Busy removal is rejected, never deferred to a later engine state.
+              if (queued && !data.error) this.setInputFx(queued);
+            }
+            return;
+          }
           if (data.type === 'import-reply') {
             if (this.session === current) this.importReply?.(data);
             return;
@@ -386,6 +426,9 @@ export class AudioClient {
               current.interrupted = false;
             }
             this.publish({
+              fx: data.fx,
+              inputFxPending: Boolean(this.fxFlight),
+              inputFxError: this.snapshot.inputFxError ?? null,
               status: current.recovering
                 ? 'recovering'
                 : current.interrupted
@@ -956,8 +999,51 @@ export class AudioClient {
     }
   }
   private command(command: AudioCommand): void {
+    if (command.type === 'reset' || command.type === 'stop-transport')
+      this.queuedFx = null;
     if (this.snapshot.status === 'ready')
       this.session?.node?.port.postMessage(command);
+  }
+  setInputFx(config: FxConfig): void {
+    const session = this.session;
+    if (this.snapshot.status !== 'ready' || !session?.node || session.switching)
+      return;
+    if (
+      this.snapshot.fx?.[0].removing ||
+      this.fxFlight?.config.type === 'None'
+    ) {
+      this.publish({
+        ...this.snapshot,
+        inputFxError:
+          'Input FX is being removed. Try again after the transition.',
+      });
+      return;
+    }
+    if (this.fxFlight) {
+      this.queuedFx = config;
+      return;
+    }
+    const requestId = ++this.fxSequence;
+    this.fxFlight = { session, requestId, config };
+    this.publish({
+      ...this.snapshot,
+      inputFxPending: true,
+      inputFxError: null,
+    });
+    session.node.port.postMessage({ type: 'set-input-fx', requestId, config });
+  }
+  private desiredInputFx(): FxConfig | undefined {
+    return (
+      this.queuedFx ?? this.fxFlight?.config ?? this.snapshot.fx?.[0].config
+    );
+  }
+  setInputCutoff(cutoffHz: number): void {
+    const config = this.desiredInputFx();
+    if (config?.type === 'LowPass') this.setInputFx({ ...config, cutoffHz });
+  }
+  setInputBypass(bypassed: boolean): void {
+    const config = this.desiredInputFx();
+    if (config?.type === 'LowPass') this.setInputFx({ ...config, bypassed });
   }
   async clear(trackId: TrackId): Promise<DestructiveResult> {
     return this.destructiveAction(() =>

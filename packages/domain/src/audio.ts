@@ -1,5 +1,23 @@
 export type PlaybackMode = 'Loop' | 'OneShot';
 export type TrackId = 0 | 1;
+export type FxConfig =
+  | { readonly type: 'None' }
+  | {
+      readonly type: 'LowPass';
+      readonly cutoffHz: number;
+      readonly bypassed: boolean;
+    };
+export interface FxSnapshot {
+  readonly config: FxConfig;
+  readonly transitioning: boolean;
+  readonly removing: boolean;
+}
+export type SessionFxSnapshot = readonly [
+  FxSnapshot,
+  FxSnapshot,
+  FxSnapshot,
+  FxSnapshot,
+];
 export type AudioStatus =
   | 'idle'
   | 'starting'
@@ -30,6 +48,9 @@ export interface TransportSnapshot {
   readonly cycleLengthSamples: number;
 }
 export interface AudioSnapshot {
+  readonly fx?: SessionFxSnapshot;
+  readonly inputFxPending?: boolean;
+  readonly inputFxError?: string | null;
   readonly inputDeviceId: string | null;
   readonly masterGain: number;
   readonly transport: TransportSnapshot;

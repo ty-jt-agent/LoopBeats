@@ -1,4 +1,7 @@
 export type {
+  FxConfig,
+  FxSnapshot,
+  SessionFxSnapshot,
   AudioCommand,
   AudioSnapshot,
   AudioStatus,

@@ -21,6 +21,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:browser": "npm run spike:wasm:build && npm run build && playwright test",
+    "test:browser:input-fx": "node scripts/test-input-fx-preview.mjs",
     "build:wasm": "cargo build --locked --release --target wasm32-unknown-unknown -p loop-engine",
     "check": "npm run check:scaffold && npm run typecheck && npm run lint && npm run format:check && npm test",
     "spike:audio": "npm run dev -- --open /browser-audio-spike/index.html",
