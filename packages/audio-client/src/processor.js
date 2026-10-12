@@ -35,6 +35,47 @@ class LoopProcessor extends AudioWorkletProcessor {
     this.exportSession = null;
     this.importSession = null;
     this.port.onmessage = ({ data }) => {
+      if (data.type === 'set-playback-fx') {
+        const config = data.config;
+        const valid =
+          config &&
+          typeof config === 'object' &&
+          ((config.type === 'None' && Object.keys(config).length === 1) ||
+            (config.type === 'LowPass' &&
+              Object.keys(config).length === 3 &&
+              Number.isFinite(config.cutoffHz) &&
+              typeof config.bypassed === 'boolean'));
+        const args = valid
+          ? [
+              config.type === 'None' ? 0 : 1,
+              config.type === 'None' ? 0 : config.cutoffHz,
+              config.type === 'None' ? 0 : Number(config.bypassed),
+            ]
+          : [];
+        const supportedScope =
+          Number.isInteger(data.scope) && data.scope >= 1 && data.scope <= 3;
+        const result = this.failed
+          ? 3
+          : !valid || !supportedScope
+            ? 1
+            : data.scope === 3
+              ? (this.engine.set_master_fx?.(...args) ?? 1)
+              : (this.engine.set_track_fx?.(data.scope - 1, ...args) ?? 1);
+        const error = [
+          '',
+          'Invalid FX configuration. The previous setting is retained.',
+          'FX is being removed. Try again after the transition.',
+          'Audio processing is unavailable.',
+        ][result];
+        this.publishSnapshot();
+        this.port.postMessage({
+          type: 'playback-fx-reply',
+          scope: data.scope,
+          requestId: data.requestId,
+          error: error || undefined,
+        });
+        return;
+      }
       if (data.type === 'set-input-fx') {
         let error;
         const config = data.config;

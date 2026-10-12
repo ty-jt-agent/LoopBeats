@@ -5,7 +5,7 @@ const npm = process.env.npm_execpath;
 if (!npm) throw new Error('Run through npm run test:browser:input-fx.');
 for (const args of [
   ['run', 'build'],
-  ['exec', '--', 'playwright', 'test', 'input-fx.spec.ts'],
+  ['exec', '--', 'playwright', 'test', 'fx.spec.ts'],
 ]) {
   const result = spawnSync(process.execPath, [npm, ...args], {
     stdio: 'inherit',
