@@ -27,6 +27,8 @@ At #19, map all 50 parent stories to automated or manual evidence. These combine
 
 These cases cover the new FX delivery. They are deferred to #83 and do not reopen
 closed #19 or imply its desktop report validates effects/mobile behavior.
+Use the reproducible measurement and device record in
+[fx-performance-83.md](fx-performance-83.md) for #83 evidence.
 
 | Case ID | Focused procedure | Status / owner |
 | --- | --- | --- |
