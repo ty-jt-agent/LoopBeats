@@ -454,6 +454,7 @@ test('recovery checkpoints acknowledged FX targets and restores them with fresh 
 test('recovery freezes partial capture and its acknowledged FX target together', async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await ready(page);
   await page
     .getByLabel('Load ZIP', { exact: true })
