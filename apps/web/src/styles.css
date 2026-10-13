@@ -6,25 +6,85 @@
   text-rendering: optimizeLegibility;
   color-scheme: dark;
 }
-.input-fx-preview {
+.fx-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
   padding: 16px;
   margin: 16px 0;
   border: 1px solid #61748c;
   border-radius: 12px;
 }
-.input-fx-preview select,
-.input-fx-preview button,
-.input-fx-preview input {
+.fx-scope-launchers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.fx-scope-launcher {
+  max-width: 100%;
+}
+.fx-editor select,
+.fx-editor button,
+.fx-editor input {
   min-height: 44px;
   min-width: 44px;
   max-width: 100%;
 }
-.input-fx-preview label {
+.fx-editor label {
   display: block;
 }
-.input-cutoff input {
+.fx-editor-header,
+.fx-scope-select,
+.fx-cutoff-adjusters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fx-editor-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+.fx-editor-controls > label {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 150px;
+  min-width: 0;
+}
+.fx-editor-controls select {
+  width: 100%;
+}
+.fx-editor-controls .fx-cutoff {
+  flex-basis: 100%;
+}
+.fx-cutoff input {
   display: block;
   width: 100%;
+}
+.fx-toggle {
+  min-width: 88px !important;
+}
+.fx-cutoff-adjusters button {
+  width: 48px;
+  flex: none;
+}
+.fx-cutoff-adjusters output,
+.fx-acknowledged {
+  font-variant-numeric: tabular-nums;
+}
+.fx-explanation {
+  border-top: 1px solid #61748c;
+  font-size: 12px;
+}
+.master-volume-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 * {
   box-sizing: border-box;

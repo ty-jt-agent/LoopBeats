@@ -146,6 +146,13 @@ test('keyboard operates the performance, settings and removal workflows at zoom-
   ).toBeFocused();
   await page.keyboard.press('Enter');
   await page.keyboard.press('Tab');
+  const trackFx = first.getByRole('button', { name: 'Open Track 1 effects' });
+  await expect(trackFx).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#fx-editor')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(trackFx).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(
     first.locator('summary').filter({ hasText: /^Track 1 diagnostics$/ }),
   ).toBeFocused();

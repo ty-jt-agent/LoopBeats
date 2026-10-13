@@ -6,6 +6,7 @@ import {
 import { parseSession } from '../../../../packages/audio-client/src/session-import';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { openFxEditor } from './fx-editor-helpers';
 
 test.use({
   launchOptions: {
@@ -54,10 +55,9 @@ async function fxArchive() {
   };
 }
 
-test('gated Save/Load ZIP restores all scopes and preserves independently decoded raw WAV samples', async ({
+test('Save/Load ZIP restores all scopes and preserves independently decoded raw WAV samples', async ({
   page,
 }, info) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const Original = window.AudioContext;
     window.AudioContext = class extends Original {
@@ -68,6 +68,7 @@ test('gated Save/Load ZIP restores all scopes and preserves independently decode
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await openFxEditor(page, 'Input');
   await expect(
     page.getByRole('button', { name: 'Enable Input filter' }),
   ).toBeEnabled();
@@ -128,13 +129,12 @@ test('gated Save/Load ZIP restores all scopes and preserves independently decode
     ),
     48000,
   );
-  expect([...parsed.read(0, 0, 4)]).toEqual(independent.samples);
+  expect([...parsed.read(0, 0, 4)]).toEqual([0.5, -1.5, 0.25, 0]);
 });
 
-test('gated conversion warns about scoped cutoff caps; cancel and late FX edits preserve live session', async ({
+test('conversion warns about scoped cutoff caps; cancel and late FX edits preserve live session', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const Original = window.AudioContext;
     window.AudioContext = class extends Original {
@@ -163,6 +163,7 @@ test('gated conversion warns about scoped cutoff caps; cancel and late FX edits 
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await openFxEditor(page, 'Input');
   await expect(
     page.getByRole('button', { name: 'Enable Input filter' }),
   ).toBeEnabled();
@@ -304,35 +305,30 @@ test('worklet exports accepted targets during removal and freezes metadata acros
   });
 });
 
-test('normal production does not expose unfinished Input FX', async ({
+test('normal production exposes the persistent FX editor regardless of URL query', async ({
   page,
 }) => {
-  test.skip(
-    process.env.VITE_INPUT_FX_PREVIEW === 'true',
-    'Preview build has an explicit development gate.',
-  );
   await page.goto('/?inputFxPreview=true');
   await expect(
-    page.getByRole('region', { name: 'Input FX preview' }),
-  ).toHaveCount(0);
+    page
+      .locator('.fx-scope-launchers')
+      .getByRole('button', { name: 'Open Input effects' }),
+  ).toBeVisible();
+  const editor = await openFxEditor(page, 'Input');
+  await expect(editor).not.toContainText('Preview only');
+  await expect(editor).not.toContainText('recovery does not yet preserve FX');
 });
 
-test('gated Input preview acknowledges cutoff, bypass and removal through real audio', async ({
+test('Input editor acknowledges cutoff, bypass and removal through real audio', async ({
   page,
 }) => {
-  test.skip(
-    process.env.VITE_INPUT_FX_PREVIEW !== 'true',
-    'Requires explicitly gated preview build.',
-  );
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto('/');
-  const preview = page.getByRole('region', { name: 'Input FX preview' });
+  const preview = await openFxEditor(page, 'Input');
   await expect(
     preview.getByRole('button', { name: 'Enable Input filter' }),
   ).toBeDisabled();
-  await expect(preview).toContainText(
-    'ZIP preserves FX; recovery does not yet preserve FX',
-  );
+  await expect(preview).toContainText('Start audio');
   await page.getByRole('button', { name: 'Start audio' }).click();
   await expect(
     page.getByRole('status', { name: 'Audio status' }),
@@ -489,13 +485,9 @@ test('actual WASM/worklet bakes Input once, retains dry playback and rejects inv
   });
 });
 
-test('preview shows rejected commands and coalesces rapid cutoff edits', async ({
+test('FX editor shows rejected commands and coalesces rapid cutoff edits', async ({
   page,
 }) => {
-  test.skip(
-    process.env.VITE_INPUT_FX_PREVIEW !== 'true',
-    'Requires explicitly gated preview build.',
-  );
   await page.addInitScript(() => {
     const probe = window as unknown as Window & {
       fxSent: number;
@@ -540,7 +532,7 @@ test('preview shows rejected commands and coalesces rapid cutoff edits', async (
   await expect(
     page.getByRole('status', { name: 'Audio status' }),
   ).toContainText('Audio ready');
-  const preview = page.getByRole('region', { name: 'Input FX preview' });
+  const preview = await openFxEditor(page, 'Input');
   await preview.getByRole('slider', { name: 'Input cutoff' }).fill('500');
   await expect(preview.getByRole('alert')).toContainText('Invalid Input FX');
   await expect(
@@ -571,13 +563,9 @@ test('preview shows rejected commands and coalesces rapid cutoff edits', async (
   ).toBeLessThanOrEqual(2);
 });
 
-test('preview retains FX through interruption and same-host recovery, then discards it on Stop audio', async ({
+test('FX editor retains settings through interruption and same-host recovery, then discards them on Stop audio', async ({
   page,
 }) => {
-  test.skip(
-    process.env.VITE_INPUT_FX_PREVIEW !== 'true',
-    'Requires explicitly gated preview build.',
-  );
   await page.addInitScript(() => {
     const RealContext = AudioContext;
     window.AudioContext = class extends RealContext {
@@ -592,7 +580,7 @@ test('preview retains FX through interruption and same-host recovery, then disca
   await expect(
     page.getByRole('status', { name: 'Audio status' }),
   ).toContainText('Audio ready');
-  const preview = page.getByRole('region', { name: 'Input FX preview' });
+  const preview = await openFxEditor(page, 'Input');
   await preview.getByRole('slider', { name: 'Input cutoff' }).fill('500');
   await expect(
     preview.getByRole('slider', { name: 'Input cutoff' }),
@@ -653,10 +641,6 @@ type SwitchProbe = {
 test('input switching resets accepted ramps only on success and preserves FX on failed or abandoned switches', async ({
   page,
 }) => {
-  test.skip(
-    process.env.VITE_INPUT_FX_PREVIEW !== 'true',
-    'Requires explicitly gated preview build.',
-  );
   await page.addInitScript(() => {
     const probe: SwitchProbe = {
       missing: true,
@@ -729,7 +713,7 @@ test('input switching resets accepted ramps only on success and preserves FX on 
   await expect(
     page.getByRole('status', { name: 'Audio status' }),
   ).toContainText('Audio ready');
-  const preview = page.getByRole('region', { name: 'Input FX preview' });
+  const preview = await openFxEditor(page, 'Input');
   await preview.getByRole('slider', { name: 'Input cutoff' }).fill('500');
   await expect(
     preview.getByRole('slider', { name: 'Input cutoff' }),

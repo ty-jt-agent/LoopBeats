@@ -6,7 +6,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { TrackId } from '@loopbeats/domain';
+import type { FxScope, TrackId } from '@loopbeats/domain';
 import { AudioClient } from '@loopbeats/audio-client';
 import { recoveryDeletionNotice } from './recovery-deletion-notice';
 import { TrackStrip } from './TrackStrip';
@@ -14,8 +14,8 @@ import { SessionExport } from './SessionExport';
 import { SessionImport } from './SessionImport';
 import { recoveryPresentation } from './recovery-presentation';
 import { SettingsPanel, type SettingsGroup } from './SettingsPanel';
-import { InputFxPreview } from './InputFxPreview';
-import { FxPreview } from './FxPreview';
+import { FxEditor, FxScopeLauncher } from './FxEditor';
+import { fxStateLabel } from './fx-state';
 
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
 type InputDevice = { id: string; label: string };
@@ -89,6 +89,9 @@ function writeSettings(settings: StoredSettings): boolean {
 export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroup>('Session');
+  const [fxEditorOpen, setFxEditorOpen] = useState(false);
+  const [fxEditorScope, setFxEditorScope] = useState<FxScope>(0);
+  const fxEditorOpener = useRef<HTMLButtonElement | null>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const selectedSettingsTab = useRef<HTMLButtonElement>(null);
   const focusSettingsGroup = useCallback(
@@ -119,6 +122,20 @@ export function App() {
     }
     previouslyOpen.current = settingsOpen;
   }, [settingsOpen]);
+  const previouslyFxEditorOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (previouslyFxEditorOpen.current && !fxEditorOpen) {
+      const opener = fxEditorOpener.current;
+      if (opener?.isConnected) opener.focus();
+    }
+    previouslyFxEditorOpen.current = fxEditorOpen;
+  }, [fxEditorOpen]);
+  const openFxEditor = (scope: FxScope, trigger: HTMLButtonElement) => {
+    const sameOpener = fxEditorOpener.current === trigger;
+    if (fxEditorOpen || !sameOpener) setFxEditorScope(scope);
+    fxEditorOpener.current = trigger;
+    setFxEditorOpen(true);
+  };
   const [sessionBusy, setSessionBusy] = useState(false);
   const [storedSettings] = useState(readSettings);
   const lastMix = useRef<Pick<StoredSettings, 'masterGain' | 'tracks'>>(
@@ -393,7 +410,8 @@ export function App() {
               </p>
               {snapshot.error && <p role="alert">{snapshot.error}</p>}
               <p className="session-guidance">
-                Use wired headphones. Monitoring starts off.
+                Use wired headphones. Monitoring starts off. Input FX:{' '}
+                {fxStateLabel(snapshot.fx?.[0])}
               </p>
               <p className="session-guidance">
                 Recordings are temporary. Preferences do not save recordings.
@@ -477,22 +495,24 @@ export function App() {
                 {snapshot.outputLevel.toFixed(3)}
               </span>
             </div>
-            <label className="master-gain">
-              Master volume
-              <input
-                type="range"
-                aria-label="Master volume"
-                min="0"
-                max="1"
-                step="0.01"
-                value={snapshot.masterGain}
-                disabled={!ready || switchPending}
-                onChange={(event) =>
-                  client.setMasterGain(Number(event.currentTarget.value))
-                }
-              />
-              <span>{Math.round(snapshot.masterGain * 100)}%</span>
-            </label>
+            <div className="master-volume-controls">
+              <label className="master-gain">
+                Master volume · FX {fxStateLabel(snapshot.fx?.[3])}
+                <input
+                  type="range"
+                  aria-label="Master volume"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={snapshot.masterGain}
+                  disabled={!ready || switchPending}
+                  onChange={(event) =>
+                    client.setMasterGain(Number(event.currentTarget.value))
+                  }
+                />
+                <span>{Math.round(snapshot.masterGain * 100)}%</span>
+              </label>
+            </div>
             <section aria-labelledby="transport-heading">
               <h2 id="transport-heading">Transport</h2>
               <p data-testid="transport-state">
@@ -512,6 +532,16 @@ export function App() {
               </button>
             </section>
           </div>
+          {fxEditorOpen && (
+            <FxEditor
+              client={client}
+              snapshot={snapshot}
+              enabled={ready && !switchPending}
+              scope={fxEditorScope}
+              onScopeChange={setFxEditorScope}
+              onClose={() => setFxEditorOpen(false)}
+            />
+          )}
           <div className="track-bank">
             {snapshot.tracks.map((track, index) => (
               <TrackStrip
@@ -522,6 +552,9 @@ export function App() {
                 cycleLengthSamples={snapshot.transport.cycleLengthSamples}
                 enabled={ready && !switchPending}
                 client={client}
+                fx={snapshot.fx?.[index + 1]}
+                fxEditorScope={fxEditorOpen ? fxEditorScope : null}
+                onOpenFx={openFxEditor}
                 clearError={
                   failedRemoval?.kind === 'track' &&
                   failedRemoval.trackId === index
@@ -534,32 +567,22 @@ export function App() {
               />
             ))}
           </div>
-          {import.meta.env.VITE_INPUT_FX_PREVIEW === 'true' && (
-            <InputFxPreview
-              client={client}
-              snapshot={snapshot}
-              enabled={ready && !switchPending}
-            />
-          )}
-          <div className="settings-launcher">
-            {import.meta.env.VITE_INPUT_FX_PREVIEW === 'true' &&
-              ([1, 2] as const).map((scope) => (
-                <FxPreview
-                  key={scope}
-                  scope={scope}
-                  client={client}
-                  snapshot={snapshot}
-                  enabled={ready && !switchPending}
-                />
-              ))}
-            {import.meta.env.VITE_INPUT_FX_PREVIEW === 'true' && (
-              <FxPreview
-                scope={3}
-                client={client}
-                snapshot={snapshot}
-                enabled={ready && !switchPending}
+          <div
+            className="fx-scope-launchers"
+            role="group"
+            aria-label="Effect scopes"
+          >
+            {([0, 1, 2, 3] as const).map((scope) => (
+              <FxScopeLauncher
+                key={scope}
+                scope={scope}
+                slot={snapshot.fx?.[scope]}
+                selected={fxEditorOpen && fxEditorScope === scope}
+                onOpen={openFxEditor}
               />
-            )}
+            ))}
+          </div>
+          <div className="settings-launcher">
             <button
               ref={settingsTrigger}
               aria-expanded={settingsOpen}
@@ -668,8 +691,9 @@ export function App() {
                 <h2 id="reset-heading">Remove recordings</h2>
                 <p>
                   Reset removes every recording and the shared cycle. Track
-                  CLEAR removes only that recording. Monitoring turns off;
-                  modes, gains, mute and saved preferences remain.
+                  CLEAR removes only that recording. Monitoring and FX return
+                  off to their default settings; modes, gains, mute and saved
+                  preferences remain.
                 </p>
                 <p>{recoveryRemovalWarning}</p>
                 {removalError && failedRemoval?.kind === 'session' && (
@@ -875,7 +899,7 @@ export function App() {
           <p id="removal-description">
             {pendingRemoval.kind === 'track'
               ? 'Remove this recording. The shared cycle and other track remain.'
-              : 'Remove all recordings, including unfinished work, and reset the shared cycle and transport to zero. Monitoring returns off. Modes, gains, mute and saved preferences remain.'}{' '}
+              : 'Remove all recordings, including unfinished work, and reset the shared cycle and transport to zero. Monitoring returns off and all FX return to their default bypassed settings. Modes, gains, mute and saved preferences remain.'}{' '}
             Audio continues until you confirm.
           </p>
           <p>{recoveryRemovalWarning}</p>

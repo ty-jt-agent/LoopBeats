@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openFxEditor } from './fx-editor-helpers';
 
 test.use({
   launchOptions: {
@@ -190,10 +191,9 @@ test('does not replace input when recording begins during a delayed switch', asy
   ).toBeEnabled();
 });
 
-test('gated Master configuration survives successful input switching and failed switching', async ({
+test('Master configuration survives successful input switching and failed switching', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const commands: string[] = [];
     (
@@ -267,7 +267,7 @@ test('gated Master configuration survives successful input switching and failed 
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  const master = page.getByRole('region', { name: 'Master FX preview' });
+  const master = await openFxEditor(page, 'Master');
   await master.getByRole('button', { name: 'Enable Master filter' }).click();
   await expect(master.getByText('Master: On')).toBeVisible();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
