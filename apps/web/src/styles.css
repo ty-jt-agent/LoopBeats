@@ -15,12 +15,6 @@
   border: 1px solid #61748c;
   border-radius: 12px;
 }
-.fx-scope-launchers {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-}
 .fx-scope-launcher {
   max-width: 100%;
 }
@@ -82,7 +76,12 @@
   font-size: 12px;
 }
 .master-volume-controls {
+  min-width: 0;
+}
+.master-gain-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }

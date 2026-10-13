@@ -7,9 +7,9 @@ test('FX editor navigates scopes before audio and returns focus on Escape', asyn
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto('/');
 
-  const inputLauncher = page
-    .locator('.fx-scope-launchers')
-    .getByRole('button', { name: 'Open Input effects' });
+  const inputLauncher = page.getByRole('button', {
+    name: 'Open Input effects',
+  });
   await inputLauncher.click();
 
   const editor = page.locator('#fx-editor');
@@ -58,10 +58,7 @@ for (const viewport of [
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto('/');
     const editor = page.locator('#fx-editor');
-    const launchers = page.locator('.fx-scope-launchers');
-    await launchers
-      .getByRole('button', { name: 'Open Track 2 effects' })
-      .click();
+    await page.getByRole('button', { name: 'Open Input effects' }).click();
     await expect(editor).toBeVisible();
     await editor.getByLabel('Effect scope').selectOption('2');
     await expect(editor.getByRole('heading', { level: 2 })).toHaveText(
@@ -79,7 +76,6 @@ for (const viewport of [
         name: 'Raise Track 2 cutoff by 1/12 octave',
       }),
       editor.getByRole('button', { name: 'Close effects' }),
-      launchers.getByRole('button', { name: 'Open Track 2 effects' }),
     ];
     for (const target of touchTargets) {
       const box = await target.boundingBox();

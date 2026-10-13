@@ -310,9 +310,7 @@ test('normal production exposes the persistent FX editor regardless of URL query
 }) => {
   await page.goto('/?inputFxPreview=true');
   await expect(
-    page
-      .locator('.fx-scope-launchers')
-      .getByRole('button', { name: 'Open Input effects' }),
+    page.getByRole('button', { name: 'Open Input effects' }),
   ).toBeVisible();
   const editor = await openFxEditor(page, 'Input');
   await expect(editor).not.toContainText('Preview only');
