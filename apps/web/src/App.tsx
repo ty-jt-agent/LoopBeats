@@ -552,6 +552,14 @@ export function App() {
                   enabled={ready && !switchPending}
                 />
               ))}
+            {import.meta.env.VITE_INPUT_FX_PREVIEW === 'true' && (
+              <FxPreview
+                scope={3}
+                client={client}
+                snapshot={snapshot}
+                enabled={ready && !switchPending}
+              />
+            )}
             <button
               ref={settingsTrigger}
               aria-expanded={settingsOpen}

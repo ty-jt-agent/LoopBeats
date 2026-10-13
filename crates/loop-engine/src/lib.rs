@@ -167,6 +167,14 @@ impl LoopEngine {
         self.mutate();
         Ok(())
     }
+    pub fn set_master_fx(&mut self, config: FxConfig) -> Result<(), FxError> {
+        if self.audio_failed {
+            return Err(FxError::Unavailable);
+        }
+        self.fx[3].set(config)?;
+        self.mutate();
+        Ok(())
+    }
     fn mutate(&mut self) {
         self.command_revision = self.command_revision.saturating_add(1);
     }
@@ -746,7 +754,11 @@ impl LoopEngine {
                     self.fx[track_id + 1].clear_history();
                 }
             }
-            let final_sample = sample * f64::from(self.master_gain);
+            let Some(master) = self.fx[3].process_mix(sample) else {
+                self.fail_audio(output);
+                return;
+            };
+            let final_sample = master * f64::from(self.master_gain);
             if !final_sample.is_finite() {
                 self.fail_audio(output);
                 return;
@@ -830,6 +842,23 @@ mod wasm {
         with_engine(|engine| {
             engine
                 .set_track_fx(track_id, config)
+                .err()
+                .map_or(0, |error| error as u32)
+        })
+    }
+    #[no_mangle]
+    pub extern "C" fn set_master_fx(kind: u32, cutoff_hz: f64, bypassed: u32) -> u32 {
+        let config = match (kind, bypassed) {
+            (0, 0) if cutoff_hz == 0.0 => FxConfig::None,
+            (1, 0 | 1) => FxConfig::LowPass {
+                cutoff_hz,
+                bypassed: bypassed == 1,
+            },
+            _ => return FxError::Invalid as u32,
+        };
+        with_engine(|engine| {
+            engine
+                .set_master_fx(config)
                 .err()
                 .map_or(0, |error| error as u32)
         })
