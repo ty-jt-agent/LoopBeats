@@ -330,6 +330,7 @@ export class SessionRecovery {
       snapshot.sampleRate,
       snapshot.masterGain,
       snapshot.transport.cycleLengthSamples,
+      snapshot.fx?.map(({ config }) => config) ?? [],
       snapshot.tracks.map((t, id) => [
         t.mode,
         t.gain,

@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, expect, test, vi } from 'vitest';
 import type { AudioSnapshot } from '@loopbeats/domain';
+import type { FxConfig } from '@loopbeats/domain';
 import { SessionRecovery, type RecoveryRecord } from './session-recovery';
 
 afterEach(() => {
@@ -27,6 +28,12 @@ function fixture(initial: RecoveryRecord | null = null) {
     },
   });
   let snapshot: AudioSnapshot = {
+    fx: [
+      { config: { type: 'None' }, transitioning: false, removing: false },
+      { config: { type: 'None' }, transitioning: false, removing: false },
+      { config: { type: 'None' }, transitioning: false, removing: false },
+      { config: { type: 'None' }, transitioning: false, removing: false },
+    ],
     status: 'ready',
     sampleRate: 48000,
     masterGain: 1,
@@ -53,6 +60,16 @@ function fixture(initial: RecoveryRecord | null = null) {
       canSetMode: true,
       canSetLoop: true,
     })) as unknown as AudioSnapshot['tracks'],
+  };
+  const withFx = (scope: number, config: FxConfig, transitioning = false) => {
+    const fx = snapshot.fx!.map((slot) => ({ ...slot })) as {
+      config: FxConfig;
+      transitioning: boolean;
+      removing: boolean;
+    }[];
+    fx[scope] = { ...fx[scope]!, config, transitioning };
+    snapshot = { ...snapshot, fx: fx as unknown as AudioSnapshot['fx'] };
+    recovery.observe(snapshot, [0, 0]);
   };
   let record: RecoveryRecord | null = initial;
   let failWrite = false;
@@ -126,8 +143,28 @@ function fixture(initial: RecoveryRecord | null = null) {
       snapshot = value;
       recovery.observe(value, [0, 0]);
     },
+    withFx,
   };
 }
+
+test('acknowledged FX target changes dirty recovery independently of audio and ramp progress', async () => {
+  const { recovery, withFx, writes, read } = fixture();
+  await recovery.initialize();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(read()?.revision).toBe(1);
+
+  const target = { type: 'LowPass', cutoffHz: 2400, bypassed: false } as const;
+  withFx(3, target);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(read()?.revision).toBe(2);
+  expect(writes()).toBe(2);
+
+  withFx(3, target, true);
+  await vi.advanceTimersByTimeAsync(6000);
+  expect(read()?.revision).toBe(2);
+  expect(writes()).toBe(2);
+  recovery.dispose();
+});
 
 test('slow transfer preserves five-second deadlines and coalesces an overdue checkpoint', async () => {
   const {
