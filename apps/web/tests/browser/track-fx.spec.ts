@@ -5,6 +5,7 @@ import {
 } from '../../../../packages/audio-client/src/session-export';
 import { parseSession } from '../../../../packages/audio-client/src/session-import';
 import { readFile } from 'node:fs/promises';
+import { openFxEditor, selectFxScope } from './fx-editor-helpers';
 
 test.use({
   launchOptions: {
@@ -15,22 +16,23 @@ test.use({
   },
 });
 
-test('ordinary production keeps Track FX previews gated', async ({ page }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW === 'true');
-  await page.goto('/?trackFxPreview=true');
-  await expect(
-    page.getByRole('region', { name: 'Track 1 FX preview' }),
-  ).toHaveCount(0);
-});
-
-test('gated independent Track controls acknowledge edits, bypass and removal with reachable playback', async ({
+test('ordinary production exposes the shared Track FX editor', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await page.goto('/?trackFxPreview=true');
+  await expect(
+    page
+      .locator('.fx-scope-launchers')
+      .getByRole('button', { name: 'Open Track 1 effects' }),
+  ).toBeVisible();
+});
+
+test('independent Track controls acknowledge edits, bypass and removal with reachable playback', async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto('/');
-  const one = page.getByRole('region', { name: 'Track 1 FX preview' });
-  const two = page.getByRole('region', { name: 'Track 2 FX preview' });
+  const one = await openFxEditor(page, 'Track 1');
   await expect(
     one.getByRole('button', { name: 'Enable Track 1 filter' }),
   ).toBeDisabled();
@@ -46,9 +48,11 @@ test('gated independent Track controls acknowledge edits, bypass and removal wit
   await expect(
     one.getByRole('button', { name: 'Bypass Track 1 filter' }),
   ).toBeEnabled();
-  await expect(two.getByRole('slider', { name: 'Track 2 cutoff' })).toHaveValue(
+  await selectFxScope(one, 'Track 2');
+  await expect(one.getByRole('slider', { name: 'Track 2 cutoff' })).toHaveValue(
     '1000',
   );
+  await selectFxScope(one, 'Track 1');
   await page
     .getByRole('button', { name: /Track 1 REC\/PLAY.*Record$/ })
     .click();
@@ -79,7 +83,9 @@ test('gated independent Track controls acknowledge edits, bypass and removal wit
   await expect(
     one.getByRole('button', { name: 'Enable Track 1 filter' }),
   ).toBeEnabled();
-  await expect(two).toContainText('Track 2: Bypassed');
+  await selectFxScope(one, 'Track 2');
+  await expect(one).toContainText('Track 2: Bypassed');
+  await selectFxScope(one, 'Track 1');
   const box = await one
     .getByRole('button', { name: 'Enable Track 1 filter' })
     .boundingBox();
@@ -89,10 +95,9 @@ test('gated independent Track controls acknowledge edits, bypass and removal wit
   ).toBeLessThanOrEqual(320);
 });
 
-test('gated Master preview acknowledges edits independently from the Track scopes', async ({
+test('Master editor acknowledges edits independently from the Track scopes', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const Original = window.AudioContext;
     window.AudioContext = class extends Original {
@@ -104,17 +109,16 @@ test('gated Master preview acknowledges edits independently from the Track scope
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  const master = page.getByRole('region', { name: 'Master FX preview' });
+  const master = await openFxEditor(page, 'Master');
   await expect(master.getByText('Master: Bypassed')).toBeVisible();
   await master.getByRole('slider', { name: 'Master cutoff' }).fill('500');
   await master.getByRole('button', { name: 'Enable Master filter' }).click();
   await expect(master.getByText('Master: On')).toBeVisible();
-  await expect(
-    page.getByRole('region', { name: 'Track 1 FX preview' }),
-  ).toContainText('Track 1: Bypassed');
-  await expect(
-    page.getByRole('region', { name: 'Track 2 FX preview' }),
-  ).toContainText('Track 2: Bypassed');
+  await selectFxScope(master, 'Track 1');
+  await expect(master).toContainText('Track 1: Bypassed');
+  await selectFxScope(master, 'Track 2');
+  await expect(master).toContainText('Track 2: Bypassed');
+  await selectFxScope(master, 'Master');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
@@ -316,10 +320,9 @@ test('real worklet filters Track playback independently, preserves raw audio and
   expect(result.rejected.error).toContain('Invalid FX');
 });
 
-test('gated Track command queue keeps the latest edit, exposes rejection and resets ownership on Stop audio', async ({
+test('Track command queue keeps the latest edit, exposes rejection and resets ownership on Stop audio', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const send = MessagePort.prototype.postMessage;
     let invalid = true;
@@ -346,7 +349,7 @@ test('gated Track command queue keeps the latest edit, exposes rejection and res
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  const one = page.getByRole('region', { name: 'Track 1 FX preview' });
+  const one = await openFxEditor(page, 'Track 1');
   const slider = one.getByRole('slider', { name: 'Track 1 cutoff' });
   await expect(slider).toBeEnabled();
   await slider.fill('300');
@@ -365,9 +368,9 @@ test('gated Track command queue keeps the latest edit, exposes rejection and res
   });
   await expect(slider).toHaveValue('450');
   await expect(one.getByRole('alert')).toHaveCount(0);
-  await expect(
-    page.getByRole('region', { name: 'Track 2 FX preview' }),
-  ).toContainText('Track 2: Bypassed');
+  await selectFxScope(one, 'Track 2');
+  await expect(one).toContainText('Track 2: Bypassed');
+  await selectFxScope(one, 'Track 1');
   await page
     .getByRole('button', { name: 'Stop audio — discard session' })
     .click();
@@ -379,10 +382,9 @@ test('gated Track command queue keeps the latest edit, exposes rejection and res
   ).toBeEnabled();
 });
 
-test('gated import cannot replace a workspace while an acknowledged FX reply and queued target are outstanding', async ({
+test('import cannot replace a workspace while an acknowledged FX reply and queued target are outstanding', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const Original = window.AudioWorkletNode;
     const onmessage = Object.getOwnPropertyDescriptor(
@@ -425,7 +427,8 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
-  const slider = page.getByRole('slider', { name: 'Track 1 cutoff' });
+  const editor = await openFxEditor(page, 'Track 1');
+  const slider = editor.getByRole('slider', { name: 'Track 1 cutoff' });
   await expect(slider).toBeEnabled();
   const heldReply = page.evaluate(
     () =>
@@ -439,7 +442,7 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
   await heldReply;
   await slider.fill('400'); // Intent remains queued until the public reply is delivered.
   await expect(
-    page.getByRole('status').filter({ hasText: 'FX command pending' }),
+    page.getByRole('status').filter({ hasText: 'FX command is pending' }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const manifest: ExportManifest = {
@@ -481,8 +484,6 @@ test('gated import cannot replace a workspace while an acknowledged FX reply and
   await page.evaluate(() =>
     window.dispatchEvent(new Event('deliver-playback-fx-reply')),
   );
-  await expect(
-    page.getByRole('region', { name: 'Track 1 FX preview' }),
-  ).toContainText('target acknowledged');
+  await expect(editor).toContainText('target acknowledged');
   await expect(page.getByLabel('Load ZIP', { exact: true })).toBeEnabled();
 });

@@ -42,12 +42,11 @@ The WASM artifact is target/wasm32-unknown-unknown/release/loop_engine.wasm. The
 
 ## CI
 
-The Input FX tracer bullet remains behind the `VITE_INPUT_FX_PREVIEW=true`
-build gate. `npm run test:browser:input-fx` builds that preview and verifies its
-real UI/worklet/WASM path; ordinary builds do not expose FX controls. Rebuild
-normally before serving a non-preview release. See the
-[Input FX contract](specs/input-fx-77.md) for its persistence limitation and
-verification scope. CI runs both the normal browser suite and this gated suite.
+The public FX editor is included in ordinary production builds. `npm run
+test:browser:fx` runs the editor, persistence, input-switching, and recovery
+browser cases against the production UI and actual worklet/WASM path. See the
+[Input FX contract](specs/input-fx-77.md) for the processing contract and
+verification scope. CI runs this suite alongside the full browser suite.
 
 GitHub Actions runs on pull requests and main pushes. The web job runs Node 24, npm ci, all web checks, browser installation, the committed Rust toolchain, and production browser tests including production audio startup/monitoring, first Loop recording/playback, known-sample stereo output and the compiled WASM spike. Browser verification therefore also requires Rust. The Rust job uses the committed toolchain, fmt, clippy, tests and release WASM build. Errors fail jobs; browser failure artifacts are uploaded.
 

@@ -5,6 +5,7 @@ import {
 } from '../../../../packages/audio-client/src/session-export';
 import { parseSession } from '../../../../packages/audio-client/src/session-import';
 import { readFile } from 'node:fs/promises';
+import { openFxEditor, selectFxScope } from './fx-editor-helpers';
 
 test.beforeEach(async ({ context }) => {
   await context.addInitScript(() => {
@@ -398,21 +399,25 @@ test('completed recording is offered after reload and recovered only on request'
   await expect(track.getByTestId('loop-length')).toHaveText(length!);
 });
 
-test('gated recovery checkpoints acknowledged FX targets and restores them with fresh audio state', async ({
+test('recovery checkpoints acknowledged FX targets and restores them with fresh audio state', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await ready(page);
   await page
-    .getByLabel('Input effect', { exact: true })
+    .getByRole('button', { name: 'Close Settings', exact: true })
+    .click();
+  const editor = await openFxEditor(page, 'Input');
+  await editor
+    .getByRole('combobox', { name: 'Input effect' })
     .selectOption('LowPass');
-  await page.getByRole('button', { name: 'Enable Input filter' }).click();
-  await expect(page.getByText('Input: On', { exact: true })).toBeVisible();
-  await page
-    .getByLabel('Track 1 effect', { exact: true })
+  await editor.getByRole('button', { name: 'Enable Input filter' }).click();
+  await expect(editor.getByText('Input: On', { exact: true })).toBeVisible();
+  await selectFxScope(editor, 'Track 1');
+  await editor
+    .getByRole('combobox', { name: 'Track 1 effect' })
     .selectOption('LowPass');
-  await page.getByRole('button', { name: 'Enable Track 1 filter' }).click();
-  await expect(page.getByText('Track 1: On', { exact: true })).toBeVisible();
+  await editor.getByRole('button', { name: 'Enable Track 1 filter' }).click();
+  await expect(editor.getByText('Track 1: On', { exact: true })).toBeVisible();
   await saved(page);
 
   const stored = await storedRecovery(page);
@@ -438,14 +443,17 @@ test('gated recovery checkpoints acknowledged FX targets and restores them with 
   await page.getByRole('button', { name: 'View recovery' }).click();
   await page.getByRole('button', { name: 'Start audio', exact: true }).click();
   await page.getByRole('button', { name: 'Recover', exact: true }).click();
-  await expect(page.getByText('Input: On', { exact: true })).toBeVisible();
-  await expect(page.getByText('Track 1: On', { exact: true })).toBeVisible();
+  const restored = await openFxEditor(page, 'Input');
+  await expect(restored.getByText('Input: On', { exact: true })).toBeVisible();
+  await selectFxScope(restored, 'Track 1');
+  await expect(
+    restored.getByText('Track 1: On', { exact: true }),
+  ).toBeVisible();
 });
 
-test('gated recovery freezes partial capture and its acknowledged FX target together', async ({
+test('recovery freezes partial capture and its acknowledged FX target together', async ({
   page,
 }) => {
-  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await ready(page);
   await page
     .getByLabel('Load ZIP', { exact: true })
@@ -461,16 +469,20 @@ test('gated recovery freezes partial capture and its acknowledged FX target toge
     .getByRole('button', { name: 'Confirm', exact: true })
     .click();
   await page
+    .getByRole('button', { name: 'Close Settings', exact: true })
+    .click();
+  await page
     .locator('.track-strip')
     .nth(0)
     .getByRole('button', { name: /REC\/PLAY/ })
     .click();
   await second.getByRole('button', { name: /REC\/PLAY/ }).click();
   await expect(second.getByTestId('track-state')).toHaveText('Recording');
-  await page
-    .getByLabel('Track 2 effect', { exact: true })
+  const editor = await openFxEditor(page, 'Track 2');
+  await editor
+    .getByRole('combobox', { name: 'Track 2 effect' })
     .selectOption('LowPass');
-  await page.getByRole('button', { name: 'Enable Track 2 filter' }).click();
+  await editor.getByRole('button', { name: 'Enable Track 2 filter' }).click();
   await saved(page);
 
   const checkpoint = await storedRecovery(page);
@@ -483,11 +495,11 @@ test('gated recovery freezes partial capture and its acknowledged FX target toge
     bypassed: false,
   });
 
-  await page.getByLabel('Track 2 effect', { exact: true }).selectOption('None');
+  await editor
+    .getByRole('combobox', { name: 'Track 2 effect' })
+    .selectOption('None');
   await expect(
-    page
-      .getByRole('status')
-      .filter({ hasText: 'Track 2 FX target acknowledged' }),
+    page.getByRole('status').filter({ hasText: 'FX target acknowledged' }),
   ).toBeVisible();
   await saved(page);
   const afterRemoval = await parseSession(

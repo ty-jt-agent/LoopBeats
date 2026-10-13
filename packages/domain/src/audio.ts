@@ -1,5 +1,6 @@
 export type PlaybackMode = 'Loop' | 'OneShot';
 export type TrackId = 0 | 1;
+export type FxScope = 0 | 1 | 2 | 3;
 export type FxConfig =
   | { readonly type: 'None' }
   | {

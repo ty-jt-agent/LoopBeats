@@ -1,5 +1,12 @@
-import type { TrackId, TrackSnapshot } from '@loopbeats/domain';
+import type {
+  FxScope,
+  FxSnapshot,
+  TrackId,
+  TrackSnapshot,
+} from '@loopbeats/domain';
 import type { AudioClient } from '@loopbeats/audio-client';
+import { fxStateLabel } from './fx-state';
+import { FxScopeLauncher } from './FxEditor';
 
 type Props = {
   track: TrackSnapshot;
@@ -8,6 +15,9 @@ type Props = {
   cycleLengthSamples: number;
   enabled: boolean;
   client: AudioClient;
+  fx?: FxSnapshot;
+  fxEditorScope: FxScope | null;
+  onOpenFx: (scope: FxScope, trigger: HTMLButtonElement) => void;
   onClear: () => void;
   clearError?: string;
 };
@@ -43,6 +53,9 @@ export function TrackStrip({
   cycleLengthSamples,
   enabled,
   client,
+  fx,
+  fxEditorScope,
+  onOpenFx,
   onClear,
   clearError,
 }: Props) {
@@ -68,8 +81,9 @@ export function TrackStrip({
         <h2 id={`track-heading-${trackId}`}>
           Track {number} · {mode}
         </h2>
-        <p className="track-state" data-testid="track-state">
-          {track.state}
+        <p className="track-state">
+          <span data-testid="track-state">{track.state}</span>
+          <span>FX {fxStateLabel(fx)}</span>
         </p>
       </header>
       <label className="mode-control">
@@ -176,6 +190,12 @@ export function TrackStrip({
       {clearError && <p role="alert">{clearError}</p>}
       <details className="track-details">
         <summary>Track {number} details</summary>
+        <FxScopeLauncher
+          scope={(trackId + 1) as FxScope}
+          slot={fx}
+          selected={fxEditorScope === trackId + 1}
+          onOpen={onOpenFx}
+        />
         <details>
           <summary>Track {number} diagnostics</summary>
           <p>

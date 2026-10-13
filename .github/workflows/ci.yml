@@ -23,7 +23,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: rustup show
       - run: npm run test:browser
-      - run: npm run test:browser:input-fx
+      - run: npm run test:browser:fx
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
