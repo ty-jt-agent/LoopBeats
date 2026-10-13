@@ -196,8 +196,9 @@ test('gated Master configuration survives successful input switching and failed 
   test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
   await page.addInitScript(() => {
     const commands: string[] = [];
-    (window as unknown as { inputSwitchCommands: string[] }).inputSwitchCommands =
-      commands;
+    (
+      window as unknown as { inputSwitchCommands: string[] }
+    ).inputSwitchCommands = commands;
     const OriginalNode = window.AudioWorkletNode;
     window.AudioWorkletNode = new Proxy(OriginalNode, {
       construct(target, args, newTarget) {
@@ -279,8 +280,9 @@ test('gated Master configuration survives successful input switching and failed 
     .poll(() =>
       page.evaluate(
         () =>
-          (window as unknown as { inputSwitchCommands: string[] })
-            .inputSwitchCommands.filter((type) => type === 'stop-transport')
+          (
+            window as unknown as { inputSwitchCommands: string[] }
+          ).inputSwitchCommands.filter((type) => type === 'stop-transport')
             .length,
       ),
     )
@@ -300,8 +302,9 @@ test('gated Master configuration survives successful input switching and failed 
   await expect(
     page.evaluate(
       () =>
-        (window as unknown as { inputSwitchCommands: string[] })
-          .inputSwitchCommands.filter((type) => type === 'stop-transport')
+        (
+          window as unknown as { inputSwitchCommands: string[] }
+        ).inputSwitchCommands.filter((type) => type === 'stop-transport')
           .length,
     ),
   ).resolves.toBe(1);
