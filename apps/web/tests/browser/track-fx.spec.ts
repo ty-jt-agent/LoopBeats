@@ -3,6 +3,8 @@ import {
   assembleSession,
   type ExportManifest,
 } from '../../../../packages/audio-client/src/session-export';
+import { parseSession } from '../../../../packages/audio-client/src/session-import';
+import { readFile } from 'node:fs/promises';
 
 test.use({
   launchOptions: {
@@ -85,6 +87,124 @@ test('gated independent Track controls acknowledge edits, bypass and removal wit
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(320);
+});
+
+test('gated Master preview acknowledges edits independently from the Track scopes', async ({
+  page,
+}) => {
+  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await page.addInitScript(() => {
+    const Original = window.AudioContext;
+    window.AudioContext = class extends Original {
+      constructor(options?: AudioContextOptions) {
+        super({ sampleRate: 48000, ...options });
+      }
+    };
+  });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  const master = page.getByRole('region', { name: 'Master FX preview' });
+  await expect(master.getByText('Master: Bypassed')).toBeVisible();
+  await master.getByRole('slider', { name: 'Master cutoff' }).fill('500');
+  await master.getByRole('button', { name: 'Enable Master filter' }).click();
+  await expect(master.getByText('Master: On')).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Track 1 FX preview' }),
+  ).toContainText('Track 1: Bypassed');
+  await expect(
+    page.getByRole('region', { name: 'Track 2 FX preview' }),
+  ).toContainText('Track 2: Bypassed');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save ZIP', exact: true }).click();
+  const file = await download;
+  const parsed = await parseSession(
+    Uint8Array.from(await readFile((await file.path())!)).buffer,
+    48000,
+  );
+  const masterConfig = parsed.manifest.masterFx;
+  expect(masterConfig).toMatchObject({
+    type: 'LowPass',
+    bypassed: false,
+  });
+  if (!masterConfig || masterConfig.type !== 'LowPass')
+    throw new Error('Master filter was not exported.');
+  expect(masterConfig.cutoffHz).toBeCloseTo(632.455532, 3);
+  await page
+    .getByRole('button', { name: 'Close Settings', exact: true })
+    .click();
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(320);
+  await page
+    .getByRole('button', { name: /Stop audio.*discard session/ })
+    .click();
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await expect(master.getByText('Master: Bypassed')).toBeVisible();
+});
+
+test('actual AudioWorklet/WASM applies Master FX to monitored input after the accepted target ramp', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const rate = 48000;
+    const context = new OfflineAudioContext(1, 1024, rate);
+    await context.audioWorklet.addModule('/audio/processor.js');
+    const module = await WebAssembly.compile(
+      await (await fetch('/audio/loop-engine.wasm')).arrayBuffer(),
+    );
+    const node = new AudioWorkletNode(context, 'loop-engine', {
+      processorOptions: { module },
+      outputChannelCount: [1],
+    });
+    const command = (data: object, type: string) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        node.port.onmessage = ({ data: reply }) => {
+          if (reply.type === type) resolve(reply);
+        };
+        node.port.postMessage(data);
+      });
+    const sourceBuffer = context.createBuffer(1, 1024, rate);
+    sourceBuffer.getChannelData(0)[640] = 0.5;
+    const source = context.createBufferSource();
+    source.buffer = sourceBuffer;
+    source.connect(node).connect(context.destination);
+    source.start();
+    const firstPause = context.suspend(128 / rate);
+    const secondPause = context.suspend(640 / rate);
+    const rendering = context.startRendering();
+    await firstPause;
+    const accepted = await command(
+      {
+        type: 'set-playback-fx',
+        scope: 3,
+        requestId: 1,
+        config: { type: 'LowPass', cutoffHz: 1000, bypassed: false },
+      },
+      'playback-fx-reply',
+    );
+    node.port.postMessage({ type: 'monitoring', enabled: true });
+    await context.resume();
+    await secondPause;
+    const snapshot = await command({ type: 'snapshot' }, 'snapshot');
+    await context.resume();
+    const samples = (await rendering).getChannelData(0);
+    return {
+      error: accepted.error,
+      output: [...samples.slice(640, 644)],
+      masterFx: (snapshot.fx as { config: object }[])[3].config,
+    };
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.output[0]).toBeCloseTo(0.00195806333027369, 7);
+  expect(result.output[1]).toBeCloseTo(0.00747067946653054, 7);
+  expect(result.masterFx).toEqual({
+    type: 'LowPass',
+    cutoffHz: 1000,
+    bypassed: false,
+  });
 });
 
 test('real worklet filters Track playback independently, preserves raw audio and clears One-shot after its final sample', async ({

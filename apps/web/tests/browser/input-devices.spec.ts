@@ -189,3 +189,124 @@ test('does not replace input when recording begins during a delayed switch', asy
     page.getByRole('button', { name: /REC\/PLAY/ }).first(),
   ).toBeEnabled();
 });
+
+test('gated Master configuration survives successful input switching and failed switching', async ({
+  page,
+}) => {
+  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await page.addInitScript(() => {
+    const commands: string[] = [];
+    (window as unknown as { inputSwitchCommands: string[] }).inputSwitchCommands =
+      commands;
+    const OriginalNode = window.AudioWorkletNode;
+    window.AudioWorkletNode = new Proxy(OriginalNode, {
+      construct(target, args, newTarget) {
+        const node = Reflect.construct(target, args, newTarget);
+        commands.push('constructed');
+        const port = node.port;
+        const postMessage = port.postMessage.bind(port);
+        port.postMessage = (
+          ...messageArgs: Parameters<MessagePort['postMessage']>
+        ) => {
+          const [message] = messageArgs;
+          if (
+            message &&
+            typeof message === 'object' &&
+            'type' in message &&
+            message.type === 'stop-transport'
+          )
+            commands.push(message.type);
+          return Reflect.apply(postMessage, port, messageArgs);
+        };
+        return node;
+      },
+    });
+    const mediaDevices = navigator.mediaDevices;
+    const original = mediaDevices.getUserMedia.bind(mediaDevices);
+    let failNext = false;
+    mediaDevices.enumerateDevices = async () =>
+      ['default', 'usb'].map((deviceId) => ({
+        deviceId,
+        groupId: 'group',
+        kind: 'audioinput' as const,
+        label: deviceId === 'usb' ? 'USB interface' : 'Default microphone',
+        toJSON() {
+          return this;
+        },
+      }));
+    window.addEventListener('fail-next-input-switch', () => {
+      failNext = true;
+    });
+    mediaDevices.getUserMedia = async (constraints) => {
+      if (failNext) {
+        failNext = false;
+        throw new DOMException('Input unavailable', 'NotReadableError');
+      }
+      const stream = await original({ audio: true });
+      const requested = constraints?.audio;
+      const requestedId =
+        typeof requested === 'object' && requested
+          ? requested.deviceId
+          : undefined;
+      if (
+        requestedId &&
+        typeof requestedId === 'object' &&
+        'exact' in requestedId &&
+        typeof requestedId.exact === 'string'
+      ) {
+        const track = stream.getAudioTracks()[0];
+        const getSettings = track.getSettings.bind(track);
+        track.getSettings = () => ({
+          ...getSettings(),
+          deviceId: String(requestedId.exact),
+        });
+      }
+      return stream;
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  const master = page.getByRole('region', { name: 'Master FX preview' });
+  await master.getByRole('button', { name: 'Enable Master filter' }).click();
+  await expect(master.getByText('Master: On')).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
+  const input = page.getByRole('combobox', { name: 'Input device' });
+  await input.selectOption('usb');
+  await expect(input).toBeEnabled();
+  await expect(input).toHaveValue('usb');
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { inputSwitchCommands: string[] })
+            .inputSwitchCommands.filter((type) => type === 'stop-transport')
+            .length,
+      ),
+    )
+    .toBe(1);
+  await page
+    .getByRole('button', { name: 'Close Settings', exact: true })
+    .click();
+  await expect(master.getByText('Master: On')).toBeVisible();
+
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('fail-next-input-switch')),
+  );
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Audio', exact: true }).click();
+  await input.selectOption('default');
+  await expect(page.getByRole('alert')).toContainText('could not be opened');
+  await expect(
+    page.evaluate(
+      () =>
+        (window as unknown as { inputSwitchCommands: string[] })
+          .inputSwitchCommands.filter((type) => type === 'stop-transport')
+          .length,
+    ),
+  ).resolves.toBe(1);
+  await page
+    .getByRole('button', { name: 'Close Settings', exact: true })
+    .click();
+  await expect(master.getByText('Master: On')).toBeVisible();
+});
