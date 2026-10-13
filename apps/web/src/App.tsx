@@ -91,6 +91,7 @@ export function App() {
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroup>('Session');
   const [fxEditorOpen, setFxEditorOpen] = useState(false);
   const [fxEditorScope, setFxEditorScope] = useState<FxScope>(0);
+  const [fxEditorFocusRequest, setFxEditorFocusRequest] = useState(0);
   const fxEditorOpener = useRef<HTMLButtonElement | null>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const selectedSettingsTab = useRef<HTMLButtonElement>(null);
@@ -134,6 +135,7 @@ export function App() {
     const sameOpener = fxEditorOpener.current === trigger;
     if (fxEditorOpen || !sameOpener) setFxEditorScope(scope);
     fxEditorOpener.current = trigger;
+    setFxEditorFocusRequest((request) => request + 1);
     setFxEditorOpen(true);
   };
   const [sessionBusy, setSessionBusy] = useState(false);
@@ -561,6 +563,7 @@ export function App() {
               snapshot={snapshot}
               enabled={ready && !switchPending}
               scope={fxEditorScope}
+              focusRequest={fxEditorFocusRequest}
               onScopeChange={setFxEditorScope}
               onClose={() => setFxEditorOpen(false)}
             />

@@ -52,6 +52,7 @@ export function FxEditor({
   snapshot,
   enabled,
   scope,
+  focusRequest,
   onScopeChange,
   onClose,
 }: {
@@ -59,13 +60,14 @@ export function FxEditor({
   snapshot: AudioSnapshot;
   enabled: boolean;
   scope: FxScope;
+  focusRequest: number;
   onScopeChange: (scope: FxScope) => void;
   onClose: () => void;
 }) {
   const scopeSelector = useRef<HTMLSelectElement>(null);
   useLayoutEffect(() => {
     scopeSelector.current?.focus();
-  }, []);
+  }, [focusRequest]);
   const label = fxScopeName(scope);
   const heading = `fx-editor-heading-${scope}`;
   const slot = snapshot.fx?.[scope];
