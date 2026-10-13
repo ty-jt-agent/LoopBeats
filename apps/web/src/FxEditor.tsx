@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react';
 import type { FxConfig, FxScope, FxSnapshot } from '@loopbeats/domain';
 import type { AudioClient } from '@loopbeats/audio-client';
 import type { AudioSnapshot } from '@loopbeats/domain';
@@ -61,6 +62,10 @@ export function FxEditor({
   onScopeChange: (scope: FxScope) => void;
   onClose: () => void;
 }) {
+  const scopeSelector = useRef<HTMLSelectElement>(null);
+  useLayoutEffect(() => {
+    scopeSelector.current?.focus();
+  }, []);
   const label = fxScopeName(scope);
   const heading = `fx-editor-heading-${scope}`;
   const slot = snapshot.fx?.[scope];
@@ -128,6 +133,7 @@ export function FxEditor({
       <label className="fx-scope-select">
         Editing scope
         <select
+          ref={scopeSelector}
           aria-label="Effect scope"
           value={scope}
           onChange={(event) =>

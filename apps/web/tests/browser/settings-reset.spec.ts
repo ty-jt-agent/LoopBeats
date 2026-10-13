@@ -3,6 +3,7 @@ import {
   assembleSession,
   type ExportManifest,
 } from '../../../../packages/audio-client/src/session-export';
+import { selectFxScope } from './fx-editor-helpers';
 test.use({
   launchOptions: {
     args: [
@@ -65,6 +66,61 @@ async function saved(page: import('@playwright/test').Page) {
     timeout: 15000,
   });
 }
+
+test('reset restores changed FX defaults in an empty session without stopping audio', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
+
+  await page.getByRole('button', { name: 'Open Input effects' }).click();
+  const editor = page.locator('#fx-editor');
+  for (const scope of ['Input', 'Track 1', 'Track 2', 'Master'] as const) {
+    await selectFxScope(editor, scope);
+    const cutoff = editor.getByRole('slider', { name: `${scope} cutoff` });
+    await cutoff.fill('500');
+    await expect(cutoff).not.toHaveValue('1000');
+    await editor
+      .getByRole('button', { name: `Enable ${scope} filter` })
+      .click();
+    await expect(
+      editor.getByRole('button', { name: `Bypass ${scope} filter` }),
+    ).toBeEnabled();
+  }
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const reset = page.getByRole('button', {
+    name: 'Reset session',
+    exact: true,
+  });
+  await expect(reset).toBeEnabled();
+  await reset.click();
+  await page
+    .getByRole('dialog', { name: 'Reset session?' })
+    .getByRole('button', { name: 'Confirm', exact: true })
+    .click();
+
+  await expect(
+    page.locator('.track-strip').nth(0).getByTestId('track-state'),
+  ).toHaveText('Empty');
+  await expect(
+    page.getByRole('status', { name: 'Audio status' }),
+  ).toContainText('Audio ready');
+  for (const scope of ['Input', 'Track 1', 'Track 2', 'Master'] as const) {
+    await selectFxScope(editor, scope);
+    await expect(editor.getByLabel(`${scope} effect`)).toHaveValue('LowPass');
+    await expect(
+      editor.getByRole('button', { name: `Enable ${scope} filter` }),
+    ).toBeEnabled();
+    await expect(
+      editor.getByRole('slider', { name: `${scope} cutoff` }),
+    ).toHaveValue('1000');
+  }
+});
+
 for (const width of [1280, 320]) {
   test(`reset deletion failure retains recordings and retries after confirmation at ${width}px`, async ({
     page,

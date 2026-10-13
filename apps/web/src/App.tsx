@@ -364,6 +364,15 @@ export function App() {
   const tracksPlayable = snapshot.tracks.some(
     (track) => track.state === 'Stopped' && track.canPlay,
   );
+  const defaultFxCutoff = Math.min(
+    20000,
+    (snapshot.sampleRate ?? 48000) * 0.45,
+  );
+  const hasNonDefaultFx =
+    snapshot.fx?.some(({ config }) => {
+      if (config.type !== 'LowPass' || !config.bypassed) return true;
+      return Math.abs(config.cutoffHz - defaultFxCutoff) > 0.001;
+    }) ?? false;
   const starting =
     snapshot.status === 'starting' || snapshot.status === 'recovering';
   const status = {
@@ -704,7 +713,10 @@ export function App() {
                     switchPending ||
                     !ready ||
                     (!snapshot.transport.cycleLengthSamples &&
-                      snapshot.tracks.every((track) => track.state === 'Empty'))
+                      snapshot.tracks.every(
+                        (track) => track.state === 'Empty',
+                      ) &&
+                      !hasNonDefaultFx)
                   }
                   onClick={() => requestRemoval({ kind: 'session' })}
                 >
