@@ -77,6 +77,35 @@ async function rawExport(page: import('@playwright/test').Page) {
     48000,
   );
 }
+async function storedRecovery(page: import('@playwright/test').Page) {
+  const record = await page.evaluate(async () => {
+    const request = indexedDB.open('loopbeats.recovery.v1', 1);
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const stored = await new Promise<{
+      archive: Blob;
+      progress?: { captureKinds: (string | null)[] };
+    }>((resolve, reject) => {
+      const read = db
+        .transaction('snapshot')
+        .objectStore('snapshot')
+        .get('latest');
+      read.onsuccess = () => resolve(read.result);
+      read.onerror = () => reject(read.error);
+    });
+    db.close();
+    return {
+      archive: Array.from(new Uint8Array(await stored.archive.arrayBuffer())),
+      captureKinds: stored.progress?.captureKinds,
+    };
+  });
+  return {
+    archive: Uint8Array.from(record.archive).buffer,
+    captureKinds: record.captureKinds,
+  };
+}
 
 test.use({
   launchOptions: {
@@ -367,6 +396,105 @@ test('completed recording is offered after reload and recovered only on request'
   await page.getByRole('button', { name: 'Recover', exact: true }).click();
   await expect(track.getByTestId('track-state')).toHaveText('Stopped');
   await expect(track.getByTestId('loop-length')).toHaveText(length!);
+});
+
+test('gated recovery checkpoints acknowledged FX targets and restores them with fresh audio state', async ({
+  page,
+}) => {
+  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await ready(page);
+  await page
+    .getByLabel('Input effect', { exact: true })
+    .selectOption('LowPass');
+  await page.getByRole('button', { name: 'Enable Input filter' }).click();
+  await expect(page.getByText('Input: On', { exact: true })).toBeVisible();
+  await page
+    .getByLabel('Track 1 effect', { exact: true })
+    .selectOption('LowPass');
+  await page.getByRole('button', { name: 'Enable Track 1 filter' }).click();
+  await expect(page.getByText('Track 1: On', { exact: true })).toBeVisible();
+  await saved(page);
+
+  const stored = await storedRecovery(page);
+  const checkpoint = await parseSession(stored.archive, 48000);
+  expect(checkpoint.manifest.version).toBe(2);
+  expect(checkpoint.manifest.inputFx).toEqual({
+    type: 'LowPass',
+    cutoffHz: 20000,
+    bypassed: false,
+  });
+  expect(checkpoint.manifest.tracks.map((track) => track.fx)).toEqual([
+    { type: 'LowPass', cutoffHz: 20000, bypassed: false },
+    { type: 'LowPass', cutoffHz: 20000, bypassed: true },
+  ]);
+  expect(checkpoint.manifest.masterFx).toEqual({
+    type: 'LowPass',
+    cutoffHz: 20000,
+    bypassed: true,
+  });
+
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.reload();
+  await page.getByRole('button', { name: 'View recovery' }).click();
+  await page.getByRole('button', { name: 'Start audio', exact: true }).click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
+  await expect(page.getByText('Input: On', { exact: true })).toBeVisible();
+  await expect(page.getByText('Track 1: On', { exact: true })).toBeVisible();
+});
+
+test('gated recovery freezes partial capture and its acknowledged FX target together', async ({
+  page,
+}) => {
+  test.skip(process.env.VITE_INPUT_FX_PREVIEW !== 'true');
+  await ready(page);
+  await page
+    .getByLabel('Load ZIP', { exact: true })
+    .setInputFiles(await knownSession(48000));
+  const second = page.locator('.track-strip').nth(1);
+  await second
+    .locator('summary')
+    .filter({ hasText: /^Track 2 details$/ })
+    .click();
+  await second.getByRole('button', { name: 'CLEAR', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Confirm', exact: true })
+    .click();
+  await page
+    .locator('.track-strip')
+    .nth(0)
+    .getByRole('button', { name: /REC\/PLAY/ })
+    .click();
+  await second.getByRole('button', { name: /REC\/PLAY/ }).click();
+  await expect(second.getByTestId('track-state')).toHaveText('Recording');
+  await page
+    .getByLabel('Track 2 effect', { exact: true })
+    .selectOption('LowPass');
+  await page.getByRole('button', { name: 'Enable Track 2 filter' }).click();
+  await saved(page);
+
+  const checkpoint = await storedRecovery(page);
+  const parsed = await parseSession(checkpoint.archive, 48000);
+  expect(checkpoint.captureKinds).toEqual([null, 'OneShot']);
+  expect(parsed.manifest.tracks[1].lengthSamples).toBeGreaterThan(0);
+  expect(parsed.manifest.tracks[1].fx).toEqual({
+    type: 'LowPass',
+    cutoffHz: 20000,
+    bypassed: false,
+  });
+
+  await page.getByLabel('Track 2 effect', { exact: true }).selectOption('None');
+  await expect(
+    page
+      .getByRole('status')
+      .filter({ hasText: 'Track 2 FX target acknowledged' }),
+  ).toBeVisible();
+  await saved(page);
+  const afterRemoval = await parseSession(
+    (await storedRecovery(page)).archive,
+    48000,
+  );
+  expect(afterRemoval.manifest.tracks[1].fx).toEqual({ type: 'None' });
 });
 
 test('unfinished One-shot prefix is checkpointed while the completed Loop remains recoverable', async ({

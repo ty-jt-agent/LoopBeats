@@ -276,7 +276,7 @@ class LoopProcessor extends AudioWorkletProcessor {
               ].includes(this.engine.track_state(id));
               return {
                 id,
-                ...(!checkpoint ? { fx: this.fxConfig(id + 1) } : {}),
+                fx: this.fxConfig(id + 1),
                 mode: this.engine.playback_mode(id) === 1 ? 'OneShot' : 'Loop',
                 gain: this.engine.track_gain(id),
                 muted: Boolean(this.engine.track_muted(id)),
@@ -301,10 +301,9 @@ class LoopProcessor extends AudioWorkletProcessor {
             };
             reply.manifest = {
               format: 'LoopBeatsSession',
-              version: checkpoint ? 1 : 2,
-              ...(!checkpoint
-                ? { inputFx: this.fxConfig(0), masterFx: this.fxConfig(3) }
-                : {}),
+              version: 2,
+              inputFx: this.fxConfig(0),
+              masterFx: this.fxConfig(3),
               sampleRate,
               cycleLengthSamples: checkpoint
                 ? this.engine.checkpoint_cycle()
