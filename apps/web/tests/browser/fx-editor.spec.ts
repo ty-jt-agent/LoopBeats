@@ -10,9 +10,18 @@ test('FX editor navigates scopes before audio and returns focus on Escape', asyn
   const inputLauncher = page.getByRole('button', {
     name: 'Open Input effects',
   });
-  await inputLauncher.click();
+  await inputLauncher.focus();
+  await page.keyboard.press('Enter');
 
   const editor = page.locator('#fx-editor');
+  await expect(editor).toBeVisible();
+  const scope = editor.getByLabel('Effect scope');
+  await expect(scope).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(editor).toHaveCount(0);
+  await expect(inputLauncher).toBeFocused();
+
+  await inputLauncher.click();
   await expect(editor).toBeVisible();
   await expect(editor.getByRole('heading', { level: 2 })).toHaveText(
     'Input effects',
@@ -20,7 +29,6 @@ test('FX editor navigates scopes before audio and returns focus on Escape', asyn
   await expect(editor).toContainText('Start audio to edit effects.');
   await expect(editor.getByLabel('Input effect')).toBeDisabled();
 
-  const scope = editor.getByLabel('Effect scope');
   await expect(scope).toBeEnabled();
   await selectFxScope(editor, 'Track 2');
   await expect(editor.getByRole('heading', { level: 2 })).toHaveText(
