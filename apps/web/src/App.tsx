@@ -466,6 +466,12 @@ export function App() {
                     ? 'Disable monitoring'
                     : 'Enable monitoring'}
                 </button>
+                <FxScopeLauncher
+                  scope={0}
+                  slot={snapshot.fx?.[0]}
+                  selected={fxEditorOpen && fxEditorScope === 0}
+                  onOpen={openFxEditor}
+                />
               </div>
               <p>{snapshot.monitoring ? 'Monitoring on' : 'Monitoring off'}</p>
             </div>
@@ -496,22 +502,30 @@ export function App() {
               </span>
             </div>
             <div className="master-volume-controls">
-              <label className="master-gain">
-                Master volume · FX {fxStateLabel(snapshot.fx?.[3])}
-                <input
-                  type="range"
-                  aria-label="Master volume"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={snapshot.masterGain}
-                  disabled={!ready || switchPending}
-                  onChange={(event) =>
-                    client.setMasterGain(Number(event.currentTarget.value))
-                  }
+              <div className="master-gain-row">
+                <label className="master-gain">
+                  Master volume · FX {fxStateLabel(snapshot.fx?.[3])}
+                  <input
+                    type="range"
+                    aria-label="Master volume"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={snapshot.masterGain}
+                    disabled={!ready || switchPending}
+                    onChange={(event) =>
+                      client.setMasterGain(Number(event.currentTarget.value))
+                    }
+                  />
+                  <span>{Math.round(snapshot.masterGain * 100)}%</span>
+                </label>
+                <FxScopeLauncher
+                  scope={3}
+                  slot={snapshot.fx?.[3]}
+                  selected={fxEditorOpen && fxEditorScope === 3}
+                  onOpen={openFxEditor}
                 />
-                <span>{Math.round(snapshot.masterGain * 100)}%</span>
-              </label>
+              </div>
             </div>
             <section aria-labelledby="transport-heading">
               <h2 id="transport-heading">Transport</h2>
@@ -564,21 +578,6 @@ export function App() {
                 onClear={() =>
                   requestRemoval({ kind: 'track', trackId: index as TrackId })
                 }
-              />
-            ))}
-          </div>
-          <div
-            className="fx-scope-launchers"
-            role="group"
-            aria-label="Effect scopes"
-          >
-            {([0, 1, 2, 3] as const).map((scope) => (
-              <FxScopeLauncher
-                key={scope}
-                scope={scope}
-                slot={snapshot.fx?.[scope]}
-                selected={fxEditorOpen && fxEditorScope === scope}
-                onOpen={openFxEditor}
               />
             ))}
           </div>

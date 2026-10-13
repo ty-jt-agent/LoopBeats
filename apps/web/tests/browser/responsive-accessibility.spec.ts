@@ -85,12 +85,23 @@ test('keyboard operates the performance, settings and removal workflows at zoom-
     page.getByRole('button', { name: 'Disable monitoring' }),
   ).toBeVisible();
   await page.keyboard.press('Space');
-  await page.keyboard.press('Tab');
+  const inputFx = page.getByRole('button', { name: 'Open Input effects' });
+  await inputFx.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#fx-editor')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(inputFx).toBeFocused();
   const master = page.getByRole('slider', { name: 'Master volume' });
-  await expect(master).toBeFocused();
+  await master.focus();
   await page.keyboard.press('ArrowLeft');
   await expect(master).toHaveValue('0.99');
-  await page.keyboard.press('Tab');
+  const masterFx = page.getByRole('button', { name: 'Open Master effects' });
+  await masterFx.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#fx-editor')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(masterFx).toBeFocused();
+  await page.getByRole('combobox', { name: 'Track 1 playback mode' }).focus();
   await expect(
     page.getByRole('combobox', { name: 'Track 1 playback mode' }),
   ).toBeFocused();

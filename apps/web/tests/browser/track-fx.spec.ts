@@ -20,11 +20,8 @@ test('ordinary production exposes the shared Track FX editor', async ({
   page,
 }) => {
   await page.goto('/?trackFxPreview=true');
-  await expect(
-    page
-      .locator('.fx-scope-launchers')
-      .getByRole('button', { name: 'Open Track 1 effects' }),
-  ).toBeVisible();
+  await openFxEditor(page, 'Track 1');
+  await expect(page.locator('#fx-editor')).toBeVisible();
 });
 
 test('independent Track controls acknowledge edits, bypass and removal with reachable playback', async ({

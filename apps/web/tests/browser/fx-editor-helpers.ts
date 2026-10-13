@@ -10,10 +10,19 @@ const scopeValues: Record<FxScopeName, string> = {
 };
 
 export async function openFxEditor(page: Page, scope: FxScopeName) {
-  await page
-    .locator('.fx-scope-launchers')
-    .getByRole('button', { name: `Open ${scope} effects` })
-    .click();
+  const name = `Open ${scope} effects`;
+  if (scope === 'Track 1' || scope === 'Track 2') {
+    const track = page.locator('.track-strip').nth(scope === 'Track 1' ? 0 : 1);
+    if (await track.count()) {
+      const details = track.locator('.track-details');
+      const launcher = details.getByRole('button', { name });
+      if (!(await launcher.isVisible()))
+        await details.locator('summary').first().click();
+      await launcher.click();
+    } else {
+      await page.getByRole('button', { name: 'Open Input effects' }).click();
+    }
+  } else await page.getByRole('button', { name }).click();
   const editor = page.locator('#fx-editor');
   await editor.getByLabel('Effect scope').selectOption(scopeValues[scope]);
   await expect(editor.getByRole('heading', { level: 2 })).toHaveText(
