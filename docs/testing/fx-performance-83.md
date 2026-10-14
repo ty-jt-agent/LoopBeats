@@ -84,7 +84,8 @@ this evidence.
 
 ## Synthetic run: 2026-10-13
 
-Commit at run: `9f417dd` (`docs: add reproducible FX acceptance evidence`).
+Benchmark source: `56264f050712256109223ba74a4c268fcf0a1265`, the committed source
+revision measured by this run.
 Runner: Rust 1.98.1 release build, x86_64 WSL2 on a 13th Gen Intel Core
 i5-13450HX, Linux 6.6.87.2-microsoft-standard-WSL2, Node 24.21.0. Browser and
 audio hardware: not used. Simulated playback: 600 seconds per rate/scenario,
