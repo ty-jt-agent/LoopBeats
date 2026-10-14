@@ -19,10 +19,16 @@ fn main() {
 
     for rate in rates {
         let capacity = rate as usize * 60;
-        for scenario in ["baseline", "active", "warm-bypassed"] {
+        for scenario in [
+            "baseline",
+            "four-active",
+            "four-warm-bypassed",
+            "four-rapid-bypass-edits",
+        ] {
             let mut engine = LoopEngine::with_capacity_and_sample_rate(capacity, rate);
             let configured = scenario != "baseline";
-            let bypassed = scenario == "warm-bypassed";
+            let bypassed = scenario == "four-warm-bypassed";
+            let toggle_bypass = scenario == "four-rapid-bypass-edits";
             let cutoff = 4_000.0f64.min(f64::from(rate) * 0.45).max(20.0);
             let fx = if configured {
                 FxConfig::LowPass {
@@ -66,6 +72,7 @@ fn main() {
             let mut callbacks = 0u64;
             let mut misses = 0u64;
             let overdub_interval = (u64::from(rate) * 5 / BLOCK as u64).max(2);
+            let mut edit_count = 0u64;
             for i in 0..iterations {
                 let callback_start = Instant::now();
                 engine.process(&input, &mut output);
@@ -80,12 +87,18 @@ fn main() {
                 }
                 if configured && i % 32 == 0 {
                     let snapshot = engine.snapshot();
+                    let target_bypassed = if toggle_bypass {
+                        edit_count % 2 == 1
+                    } else {
+                        bypassed
+                    };
+                    edit_count += 1;
                     for scope in 0..4 {
                         let maximum = 20_000.0f64.min(f64::from(rate) * 0.45);
                         let cutoff = 20.0 + (i % 1_000) as f64 / 999.0 * (maximum - 20.0);
                         let config = FxConfig::LowPass {
                             cutoff_hz: cutoff,
-                            bypassed: i % 2 == 0,
+                            bypassed: target_bypassed,
                         };
                         match scope {
                             0 => {
