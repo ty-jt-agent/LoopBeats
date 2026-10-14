@@ -14,13 +14,16 @@ cargo run --locked --release -p loop-engine --example fx-load -- 600
 ```
 
 The final argument is simulated playback duration in seconds (default 600). The
-runner tests 8, 44.1, 48 and 192 kHz with baseline, four active filters, and four
-configured warm-bypassed filters. Each track is imported at its existing 60-second
-capture capacity, both tracks play together, monitoring is on, and the workload
-edits FX targets and toggles overdub during processing. It reports callback-time
+runner tests 8, 44.1, 48 and 192 kHz with a baseline, four active filters, four
+configured warm-bypassed filters, and a rapid-bypass-transition case. Each track is
+imported at its existing 60-second capture capacity, both tracks play together,
+monitoring is on, overdub starts every five simulated seconds, and checkpoint
+metadata is begun/canceled once per simulated minute. Configured scenarios edit
+cutoff targets every 32 callbacks. Active and warm-bypassed scenarios retain their
+bypass state; only the transition scenario alternates it. It reports callback-time
 percentiles, sampled maximum, and calls exceeding the nominal block budget. Timing
-includes the runner's measurement overhead. The active/bypass edits are synthetic;
-they do not reproduce a person editing the production UI.
+includes the runner's measurement overhead. These edits are synthetic; they do not
+reproduce a person editing the production UI or full checkpoint storage transfer.
 
 This native runner does not measure WASM memory, the host worklet scheduler,
 checkpoint serialization or browser storage, foreground UI contention, physical
@@ -93,18 +96,22 @@ serialization/storage transfer.
 
 | Rate | Scenario | Sampled p50 / p95 / p99 / max (ns) | Callback budget misses | Run wall time |
 | ---: | --- | ---: | ---: | ---: |
-| 8 kHz | Baseline | 1,884 / 2,319 / 3,112 / 11,060 | 0 / 37,500 | 0.076 s |
-| 8 kHz | Four active | 3,023 / 3,449 / 6,921 / 15,626 | 0 / 37,500 | 0.133 s |
-| 8 kHz | Four warm-bypassed | 2,994 / 3,401 / 8,234 / 13,066 | 0 / 37,500 | 0.135 s |
-| 44.1 kHz | Baseline | 1,854 / 2,074 / 2,713 / 13,368 | 0 / 206,719 | 0.411 s |
-| 44.1 kHz | Four active | 2,970 / 11,168 / 13,073 / 35,912 | 0 / 206,719 | 1.093 s |
-| 44.1 kHz | Four warm-bypassed | 2,966 / 11,163 / 12,679 / 241,348 | 0 / 206,719 | 1.100 s |
-| 48 kHz | Baseline | 1,831 / 2,062 / 2,882 / 21,530 | 0 / 225,000 | 0.444 s |
-| 48 kHz | Four active | 2,955 / 16,660 / 18,316 / 73,364 | 0 / 225,000 | 1.229 s |
-| 48 kHz | Four warm-bypassed | 2,946 / 16,623 / 18,239 / 188,381 | 0 / 225,000 | 1.229 s |
-| 192 kHz | Baseline | 1,837 / 2,055 / 2,556 / 39,582 | 0 / 900,000 | 1.769 s |
-| 192 kHz | Four active | 2,979 / 21,813 / 28,249 / 295,863 | 2 / 900,000 | 10.732 s |
-| 192 kHz | Four warm-bypassed | 2,974 / 21,693 / 27,407 / 491,863 | 4 / 900,000 | 10.707 s |
+| 8 kHz | Baseline | 1,692 / 1,901 / 1,994 / 3,057 | 0 / 37,500 | 0.068 s |
+| 8 kHz | Four active | 3,115 / 3,280 / 4,211 / 14,901 | 0 / 37,500 | 0.134 s |
+| 8 kHz | Four warm-bypassed | 3,104 / 3,322 / 7,425 / 22,933 | 0 / 37,500 | 0.133 s |
+| 8 kHz | Four rapid bypass edits | 3,108 / 3,359 / 4,290 / 23,199 | 0 / 37,500 | 0.134 s |
+| 44.1 kHz | Baseline | 1,676 / 1,890 / 2,353 / 11,455 | 0 / 206,719 | 0.372 s |
+| 44.1 kHz | Four active | 3,140 / 11,345 / 12,684 / 28,979 | 0 / 206,719 | 1.105 s |
+| 44.1 kHz | Four warm-bypassed | 3,148 / 11,351 / 12,606 / 50,482 | 0 / 206,719 | 1.090 s |
+| 44.1 kHz | Four rapid bypass edits | 3,150 / 11,242 / 12,606 / 367,996 | 0 / 206,719 | 1.129 s |
+| 48 kHz | Baseline | 1,690 / 1,903 / 2,005 / 35,473 | 0 / 225,000 | 0.426 s |
+| 48 kHz | Four active | 3,164 / 17,282 / 18,745 / 139,611 | 0 / 225,000 | 1.258 s |
+| 48 kHz | Four warm-bypassed | 3,135 / 16,975 / 17,491 / 148,459 | 0 / 225,000 | 1.238 s |
+| 48 kHz | Four rapid bypass edits | 3,163 / 17,349 / 22,835 / 153,236 | 0 / 225,000 | 1.265 s |
+| 192 kHz | Baseline | 1,672 / 1,895 / 2,132 / 472,335 | 4 / 900,000 | 1.665 s |
+| 192 kHz | Four active | 3,087 / 21,687 / 30,505 / 319,861 | 30 / 900,000 | 10.955 s |
+| 192 kHz | Four warm-bypassed | 3,029 / 21,245 / 26,527 / 396,753 | 18 / 900,000 | 10.572 s |
+| 192 kHz | Four rapid bypass edits | 3,046 / 21,338 / 27,409 / 170,363 | 17 / 900,000 | 10.741 s |
 
 These figures show engine execution on this runner only. Callback-budget misses at
 192 kHz include timer/instrumentation and host scheduling overhead; they do not
