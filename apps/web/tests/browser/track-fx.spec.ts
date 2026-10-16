@@ -383,6 +383,12 @@ test('import cannot replace a workspace while an acknowledged FX reply and queue
   page,
 }) => {
   await page.addInitScript(() => {
+    const OriginalAudioContext = window.AudioContext;
+    window.AudioContext = class extends OriginalAudioContext {
+      constructor(options?: AudioContextOptions) {
+        super({ sampleRate: 48000, ...options });
+      }
+    };
     const Original = window.AudioWorkletNode;
     const onmessage = Object.getOwnPropertyDescriptor(
       MessagePort.prototype,
