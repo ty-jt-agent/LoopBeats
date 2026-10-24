@@ -1,6 +1,5 @@
 // @vitest-environment node
 import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { expect, test } from 'vitest';
 
 test('session format has no platform or application infrastructure dependency', async () => {
@@ -17,7 +16,7 @@ test('session format has no platform or application infrastructure dependency', 
   const source = await Promise.all(
     files
       .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
-      .map((file) => readFile(join(sourceDir.pathname, file), 'utf8')),
+      .map((file) => readFile(new URL(file, sourceDir), 'utf8')),
   );
   const forbidden = [
     /from\s+['"]react(?:\/|['"])/,
