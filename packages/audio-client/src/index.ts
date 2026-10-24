@@ -3,6 +3,12 @@ import type {
   FxConfig,
   SessionFxSnapshot,
   AudioCommand,
+  AudioApplication,
+  AudioApplicationCommand,
+  AudioApplicationSnapshot,
+  AudioCapabilities,
+  AudioCommandOutcome,
+  AudioCommandSubmission,
   AudioSnapshot,
   TrackSnapshot,
   TrackId,
@@ -61,6 +67,10 @@ type WorkletSnapshot = {
   inputLevel: number;
   outputLevel: number;
 };
+type WorkletCommandOutcome = Extract<
+  AudioCommandOutcome,
+  { status: 'applied' | 'stale' | 'failed' }
+>;
 const emptyTrack = (): TrackSnapshot => ({
   gain: 1,
   muted: false,
@@ -91,6 +101,31 @@ const idle = (): AudioSnapshot => ({
   outputLevel: 0,
 });
 
+const toApplicationSnapshot = (
+  snapshot: AudioSnapshot,
+): AudioApplicationSnapshot => ({
+  engine: {
+    fx: snapshot.fx,
+    inputFxPending: snapshot.inputFxPending,
+    inputFxError: snapshot.inputFxError,
+    playbackFxPending: snapshot.playbackFxPending,
+    playbackFxErrors: snapshot.playbackFxErrors,
+    masterGain: snapshot.masterGain,
+    transport: snapshot.transport,
+    tracks: snapshot.tracks,
+    monitoring: snapshot.monitoring,
+    processedFrames: snapshot.processedFrames,
+    inputLevel: snapshot.inputLevel,
+    outputLevel: snapshot.outputLevel,
+  },
+  host: {
+    inputDeviceId: snapshot.inputDeviceId,
+    status: snapshot.status,
+    error: snapshot.error,
+    sampleRate: snapshot.sampleRate,
+  },
+});
+
 function recovery(error: unknown, stage: string): string {
   const name = error instanceof Error ? error.name : '';
   if (name === 'NotAllowedError' || name === 'SecurityError')
@@ -113,7 +148,9 @@ type DestructiveResult =
   | { status: 'failed'; error: string };
 
 /** Owns browser audio resources; React consumes immutable engine/lifecycle snapshots. */
-export class AudioClient {
+const MAX_PENDING_COMMANDS = 64;
+
+export class AudioClient implements AudioApplication {
   private fxSequence = 0;
   private fxFlight: {
     session: Session;
@@ -139,9 +176,16 @@ export class AudioClient {
       }),
   );
   private snapshot = idle();
+  private applicationSnapshot = toApplicationSnapshot(this.snapshot);
   private listeners = new Set<() => void>();
   private session: Session | null = null;
   private attempt = 0;
+  private generation = 0;
+  private commandSequence = 0;
+  private readonly pendingCommands = new Map<
+    number,
+    (outcome: AudioCommandOutcome) => void
+  >();
   private inputError: string | null = null;
   private exportSequence = 0;
   private cancelExport: (() => void) | null = null;
@@ -211,6 +255,15 @@ export class AudioClient {
   }
   constructor(private assets: { wasm: string; worklet: string }) {}
   getSnapshot = () => this.snapshot;
+  getApplicationSnapshot = () => this.applicationSnapshot;
+  getSessionGeneration = () => this.generation;
+  getCapabilities = (): AudioCapabilities => ({
+    inputDeviceSelection: true,
+    outputDeviceSelection: false,
+    monitoring: true,
+    gainUpdateCoalescing: false,
+    supportedFxScopes: [0, 1, 2, 3],
+  });
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
@@ -219,8 +272,48 @@ export class AudioClient {
   };
   private publish(snapshot: AudioSnapshot) {
     this.snapshot = snapshot;
+    this.applicationSnapshot = toApplicationSnapshot(snapshot);
     this.recoverySession?.observe(snapshot, this.recordingRevisions);
     for (const listener of this.listeners) listener();
+  }
+  private advanceGeneration(): void {
+    const oldGeneration = this.generation++;
+    for (const [commandId, resolve] of this.pendingCommands) {
+      resolve({ commandId, generation: oldGeneration, status: 'stale' });
+      this.pendingCommands.delete(commandId);
+    }
+  }
+  private finishCommand(outcome: AudioCommandOutcome): void {
+    const resolve = this.pendingCommands.get(outcome.commandId);
+    if (!resolve) return;
+    this.pendingCommands.delete(outcome.commandId);
+    resolve(outcome);
+  }
+  submit(command: AudioApplicationCommand): AudioCommandSubmission {
+    const session = this.session;
+    if (this.snapshot.status !== 'ready' || !session?.node)
+      return { status: 'rejected', reason: 'unavailable' };
+    if (this.pendingCommands.size >= MAX_PENDING_COMMANDS)
+      return { status: 'rejected', reason: 'overloaded' };
+    const commandId = ++this.commandSequence;
+    const generation = this.generation;
+    let resolve!: (outcome: AudioCommandOutcome) => void;
+    const outcome = new Promise<AudioCommandOutcome>((done) => {
+      resolve = done;
+    });
+    this.pendingCommands.set(commandId, resolve);
+    try {
+      session.node.port.postMessage({
+        type: 'application-command',
+        commandId,
+        generation,
+        command,
+      });
+    } catch {
+      this.pendingCommands.delete(commandId);
+      return { status: 'rejected', reason: 'unavailable' };
+    }
+    return { status: 'accepted', commandId, generation, outcome };
   }
   private disconnectInput(session: Session) {
     session.source?.disconnect();
@@ -259,6 +352,7 @@ export class AudioClient {
     this.playbackFx.cancelQueued();
     this.cancelImport?.();
     ++this.attempt;
+    this.advanceGeneration();
     session.interrupted = true;
     session.recovering = false;
     session.finishRecovery?.(new Error(reason));
@@ -306,6 +400,7 @@ export class AudioClient {
     if (this.session !== session) return;
     this.session = null;
     this.attempt++;
+    this.advanceGeneration();
     this.publish({ ...idle(), status: 'error', error: message });
     await this.release(session);
   }
@@ -319,6 +414,8 @@ export class AudioClient {
     )
       return;
     const attempt = ++this.attempt;
+    this.advanceGeneration();
+    const generation = this.generation;
     this.inputError = null;
     this.publish({ ...idle(), status: 'starting' });
     let session: Session | undefined;
@@ -377,7 +474,7 @@ export class AudioClient {
         channelCount: 1,
         channelCountMode: 'explicit',
         outputChannelCount: [2],
-        processorOptions: { module },
+        processorOptions: { module, generation },
       });
       session.node = node;
       const current = session;
@@ -407,7 +504,14 @@ export class AudioClient {
           | ImportReply
           | InputFxReply
           | PlaybackFxReply
+          | WorkletCommandOutcome
         >) => {
+          if ('commandId' in data && 'generation' in data) {
+            this.finishCommand(data);
+            if (data.status === 'applied' && this.session === current)
+              current.node?.port.postMessage({ type: 'snapshot' });
+            return;
+          }
           if (data.type === 'playback-fx-reply') {
             if (this.session === current) this.playbackFx.reply(data);
             return;
@@ -577,6 +681,7 @@ export class AudioClient {
       this.watchInput(session);
       this.inputError = null;
       this.stopTransport();
+      session.node.port.postMessage({ type: 'snapshot' });
       return true;
     } catch (error) {
       if (replacement) replacement.getTracks().forEach((track) => track.stop());
@@ -594,6 +699,11 @@ export class AudioClient {
     const session = this.session;
     if (!session?.node || this.snapshot.status !== 'interrupted') return;
     const attempt = ++this.attempt;
+    this.advanceGeneration();
+    session.node.port.postMessage({
+      type: 'set-generation',
+      generation: this.generation,
+    });
     session.recovering = true;
     session.recoveryAfterFrames = undefined;
     this.publish({ ...this.snapshot, status: 'recovering' });
@@ -680,11 +790,7 @@ export class AudioClient {
     }
   }
   setMonitoring(enabled: boolean): void {
-    if (this.snapshot.status === 'ready')
-      this.session?.node?.port.postMessage({
-        type: 'monitoring',
-        enabled,
-      } satisfies AudioCommand);
+    this.submit({ type: 'monitoring', enabled });
   }
   /** Downloadable completed-session archive; no browser infrastructure escapes this client. */
   async exportSession(
@@ -1057,8 +1163,7 @@ export class AudioClient {
       this.playbackFx.cancelQueued((command.trackId + 1) as PlaybackFxScope);
     if (command.type === 'reset' || command.type === 'stop-transport')
       this.queuedFx = null;
-    if (this.snapshot.status === 'ready')
-      this.session?.node?.port.postMessage(command);
+    if (command.type !== 'snapshot') this.submit(command);
   }
   setInputFx(config: FxConfig): void {
     const session = this.session;
@@ -1200,6 +1305,7 @@ export class AudioClient {
   }
   async stop(): Promise<void> {
     const attempt = ++this.attempt;
+    this.advanceGeneration();
     const session = this.session;
     this.session = null;
     this.publish({ ...idle(), status: 'stopping' });

@@ -2,6 +2,10 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 import type { AudioSnapshot, TrackSnapshot } from '@loopbeats/domain';
 import { App } from './App';
+import { AudioClient } from '@loopbeats/audio-client';
+
+const renderApp = () =>
+  render(<App client={new AudioClient({ wasm: '', worklet: '' })} />);
 
 const host = vi.hoisted(() => ({
   snapshot: null as unknown as AudioSnapshot,
@@ -104,7 +108,7 @@ test.each([
         host.snapshot.tracks[1],
       ],
     };
-    render(<App />);
+    renderApp();
     fireEvent.click(
       screen.getByRole('button', { name: `Track 1 REC/PLAY — ${label}` }),
     );
@@ -123,7 +127,7 @@ test.each([
   'error',
 ] as const)('%s audio cannot send a primary command', (status) => {
   host.snapshot = { ...host.snapshot, status };
-  render(<App />);
+  renderApp();
   const button = screen.getByRole('button', {
     name: 'Track 1 REC/PLAY — Record',
   });
@@ -146,7 +150,7 @@ test.each([
         host.snapshot.tracks[1],
       ],
     };
-    render(<App />);
+    renderApp();
     const button = screen.getByRole('button', {
       name: `Track 1 REC/PLAY — ${label}`,
     });
@@ -174,7 +178,7 @@ test('a pending input switch gates the combined action until switching completes
         finish = resolve;
       }),
   );
-  render(<App />);
+  renderApp();
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
   fireEvent.click(screen.getByRole('tab', { name: 'Audio' }));
   const selector = await screen.findByRole('combobox', {
@@ -205,7 +209,7 @@ test('a stopped Loop plays before its next press starts overdub, without predict
       host.snapshot.tracks[1],
     ],
   };
-  render(<App />);
+  renderApp();
   const track = within(screen.getByRole('region', { name: 'Track 1 · Loop' }));
   fireEvent.click(
     track.getByRole('button', { name: 'Track 1 REC/PLAY — Play' }),
@@ -242,7 +246,7 @@ test('first capture shows elapsed capacity rather than an invented repeating cyc
       host.snapshot.tracks[1],
     ],
   };
-  render(<App />);
+  renderApp();
   const progress = screen.getAllByRole('progressbar')[0];
   expect(progress).toHaveAttribute('max', '2880000');
   expect(progress).toHaveAttribute('value', '24000');
@@ -250,7 +254,7 @@ test('first capture shows elapsed capacity rather than an invented repeating cyc
 
 test('settings remain available before startup and diagnostics are disclosed separately', () => {
   host.snapshot = { ...host.snapshot, status: 'idle' };
-  render(<App />);
+  renderApp();
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
   fireEvent.click(screen.getByRole('tab', { name: 'Preferences' }));
   const settings = within(screen.getByRole('region', { name: 'Settings' }));
@@ -281,7 +285,7 @@ test('Global STOP does nothing when all tracks are empty even with a retained ru
       cycleLengthSamples: 48000,
     },
   };
-  render(<App />);
+  renderApp();
   const stop = screen.getByRole('button', { name: 'Global Start' });
   expect(stop).toBeDisabled();
   fireEvent.click(stop);
@@ -314,7 +318,7 @@ test('Global Start starts retained tracks without predicting engine state', () =
       },
     ],
   };
-  render(<App />);
+  renderApp();
   const start = screen.getByRole('button', { name: 'Global Start' });
   expect(start).toBeEnabled();
   fireEvent.click(start);
@@ -351,7 +355,7 @@ test.each(['Loop', 'OneShot'] as const)(
         },
       ],
     };
-    render(<App />);
+    renderApp();
     const progress = screen.getAllByRole('progressbar');
     expect(progress[1]).toHaveAttribute(
       'max',

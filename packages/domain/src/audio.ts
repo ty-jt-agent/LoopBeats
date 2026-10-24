@@ -81,3 +81,83 @@ export type AudioCommand =
   | { type: 'clear'; trackId: TrackId }
   | { type: 'reset' }
   | { type: 'interrupt' };
+
+/** Commands in the platform-neutral application contract. Snapshot polling is host-owned. */
+export type AudioApplicationCommand = Exclude<
+  AudioCommand,
+  { type: 'snapshot' }
+>;
+
+export type AudioCommandOutcome =
+  | {
+      readonly commandId: number;
+      readonly generation: number;
+      readonly status: 'applied';
+      readonly applicationFrame: number;
+      readonly blockSequence: number;
+    }
+  | {
+      readonly commandId: number;
+      readonly generation: number;
+      readonly status: 'superseded' | 'stale' | 'failed';
+      readonly replacementCommandId?: number;
+      readonly error?: string;
+    };
+
+export type AudioCommandSubmission =
+  | {
+      readonly status: 'accepted';
+      readonly commandId: number;
+      readonly generation: number;
+      readonly outcome: Promise<AudioCommandOutcome>;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly reason: 'unavailable' | 'overloaded';
+    };
+
+export interface AudioCapabilities {
+  readonly inputDeviceSelection: boolean;
+  readonly outputDeviceSelection: boolean;
+  readonly monitoring: boolean;
+  readonly gainUpdateCoalescing: boolean;
+  readonly supportedFxScopes: readonly FxScope[];
+}
+
+export type AudioEngineSnapshot = Pick<
+  AudioSnapshot,
+  | 'fx'
+  | 'inputFxPending'
+  | 'inputFxError'
+  | 'playbackFxPending'
+  | 'playbackFxErrors'
+  | 'masterGain'
+  | 'transport'
+  | 'tracks'
+  | 'monitoring'
+  | 'processedFrames'
+  | 'inputLevel'
+  | 'outputLevel'
+>;
+
+export type AudioHostSnapshot = Pick<
+  AudioSnapshot,
+  'inputDeviceId' | 'status' | 'error' | 'sampleRate'
+>;
+
+export interface AudioApplicationSnapshot {
+  readonly engine: AudioEngineSnapshot;
+  readonly host: AudioHostSnapshot;
+}
+
+/** Minimal host conformance seam. Platform-specific session storage stays in adapters. */
+export interface AudioApplication {
+  getApplicationSnapshot(): AudioApplicationSnapshot;
+  subscribe(listener: () => void): () => void;
+  getCapabilities(): AudioCapabilities;
+  getSessionGeneration(): number;
+  submit(command: AudioApplicationCommand): AudioCommandSubmission;
+  start(inputDeviceId?: string): Promise<void>;
+  stop(): Promise<void>;
+  reinitialize(): Promise<void>;
+}
