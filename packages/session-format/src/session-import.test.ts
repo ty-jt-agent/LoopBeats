@@ -2,7 +2,25 @@
 import { expect, test } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { assembleSession, type ExportManifest } from './session-export';
-import { parseSession } from './session-import';
+import { parseSession as parseArchive } from './session-import';
+const python = process.platform === 'win32' ? 'python' : 'python3';
+
+function parseSession(
+  buffer: ArrayBuffer,
+  rate: number,
+  check: () => void = () => {},
+  allowDifferentRate = false,
+) {
+  return parseArchive(
+    buffer,
+    rate,
+    {
+      checkCanceled: check,
+      yieldToHost: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    },
+    allowDifferentRate,
+  );
+}
 
 test('same-rate exported archive preserves samples and rejects damaged audio', async () => {
   const manifest: ExportManifest = {
@@ -74,7 +92,7 @@ function independentManifestArchive(
   json = JSON.stringify(source),
 ): ArrayBuffer {
   // Python creates the ZIP independently. Explicit UTF-8 flags match the accepted format.
-  const file = execFileSync('python', [
+  const file = execFileSync(python, [
     '-c',
     `
 import sys,io,zipfile,struct
@@ -285,7 +303,7 @@ test.each(['rate', 'channels', 'fact', 'length', 'nonfinite'] as const)(
     source.tracks[0].audioPath = 'tracks/0.wav';
     const input = await encode(source);
     const output = execFileSync(
-      'python',
+      python,
       [
         '-c',
         `

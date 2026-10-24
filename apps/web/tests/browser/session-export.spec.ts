@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 
+const python = process.platform === 'win32' ? 'python' : 'python3';
+
 test.use({
   launchOptions: {
     args: [
@@ -73,7 +75,7 @@ test('downloads a standard ZIP of completed audio while another track is recordi
   // Python's independent ZIP implementation verifies CRC and central directory.
   const decoded = JSON.parse(
     execFileSync(
-      'python',
+      python,
       [
         '-c',
         `

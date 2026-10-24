@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { expect, test, vi } from 'vitest';
 import { assembleSession, type ExportManifest } from './session-export';
 
+const python = process.platform === 'win32' ? 'python' : 'python3';
+
 function manifest(rate = 192000, length = rate * 60): ExportManifest {
   return {
     format: 'LoopBeatsSession',
@@ -46,7 +48,7 @@ test('assembles both maximum recordings into independently validated ZIP/WAVs', 
     await writeFile(path, Buffer.from(await archive.arrayBuffer()));
     const decoded = JSON.parse(
       execFileSync(
-        'python',
+        python,
         [
           '-c',
           `
@@ -89,6 +91,66 @@ test.each([8000, 192000])('accepts source rate boundary %i', async (rate) => {
     () => {},
   );
   expect(archive.type).toBe('application/zip');
+});
+
+test('exports version 2 FX configuration in the versioned ZIP/WAV format', async () => {
+  const source: ExportManifest = {
+    format: 'LoopBeatsSession',
+    version: 2,
+    sampleRate: 48000,
+    cycleLengthSamples: 2,
+    masterGain: 0.75,
+    inputFx: { type: 'LowPass', cutoffHz: 1200, bypassed: false },
+    masterFx: { type: 'None' },
+    tracks: [
+      {
+        id: 0,
+        mode: 'Loop',
+        gain: 0.5,
+        muted: false,
+        lengthSamples: 2,
+        audioPath: 'tracks/0.wav',
+        fx: { type: 'None' },
+      },
+      {
+        id: 1,
+        mode: 'OneShot',
+        gain: 1,
+        muted: true,
+        lengthSamples: 0,
+        audioPath: null,
+        fx: { type: 'LowPass', cutoffHz: 800, bypassed: true },
+      },
+    ],
+  };
+  const archive = await assembleSession(
+    source,
+    async () => new Float32Array([0.25, -0.5]),
+    () => {},
+    () => {},
+  );
+  const bytes = new Uint8Array(await archive.arrayBuffer());
+  const view = new DataView(bytes.buffer);
+  const metadataLength = view.getUint32(18, true);
+  const metadataStart = 30 + 'session.json'.length;
+  const exported = JSON.parse(
+    new TextDecoder().decode(
+      bytes.subarray(metadataStart, metadataStart + metadataLength),
+    ),
+  );
+  expect(exported).toEqual(source);
+
+  const waveHeader = metadataStart + metadataLength;
+  expect(view.getUint32(waveHeader, true)).toBe(0x04034b50);
+  expect(
+    new TextDecoder().decode(
+      bytes.subarray(waveHeader + 30, waveHeader + 30 + 'tracks/0.wav'.length),
+    ),
+  ).toBe('tracks/0.wav');
+  const wave = waveHeader + 30 + 'tracks/0.wav'.length;
+  expect(new TextDecoder().decode(bytes.subarray(wave, wave + 4))).toBe('RIFF');
+  expect(view.getFloat32(wave + 56, true)).toBe(0.25);
+  expect(view.getFloat32(wave + 60, true)).toBe(-0.5);
 });
 
 test('accepts 64 KiB JSON and rejects one byte more before transfer', async () => {

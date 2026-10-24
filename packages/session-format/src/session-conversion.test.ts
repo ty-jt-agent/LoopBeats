@@ -1,8 +1,27 @@
 // @vitest-environment node
 import { expect, test } from 'vitest';
 import { assembleSession, type ExportManifest } from './session-export';
-import { parseSession } from './session-import';
-import { convertSession } from './session-conversion';
+import { parseSession as parseArchive } from './session-import';
+import { convertSession as planConversion } from './session-conversion';
+
+const yieldToTestHost = () =>
+  new Promise<void>((resolve) => setTimeout(resolve, 0));
+function parseSession(buffer: ArrayBuffer, rate: number) {
+  return parseArchive(buffer, rate, {
+    checkCanceled: () => {},
+    yieldToHost: yieldToTestHost,
+  });
+}
+function convertSession(
+  source: Parameters<typeof planConversion>[0],
+  rate: number,
+  check: () => void,
+) {
+  return planConversion(source, rate, {
+    checkCanceled: check,
+    yieldToHost: yieldToTestHost,
+  });
+}
 
 async function fixture(
   rate: number,

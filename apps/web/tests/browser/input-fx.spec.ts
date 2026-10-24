@@ -8,6 +8,8 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { openFxEditor } from './fx-editor-helpers';
 
+const python = process.platform === 'win32' ? 'python' : 'python3';
+
 test.use({
   launchOptions: {
     args: [
@@ -93,7 +95,7 @@ test('Save/Load ZIP restores all scopes and preserves independently decoded raw 
   await (await downloading).saveAs(path);
   const independent = JSON.parse(
     execFileSync(
-      'python',
+      python,
       [
         '-c',
         "import zipfile,json,struct,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; w=z.read('tracks/0.wav'); print(json.dumps({'manifest':json.loads(z.read('session.json')),'samples':struct.unpack_from('<4f',w,56)}))",
