@@ -695,7 +695,12 @@ test('input switching resets accepted ramps only on success and preserves FX on 
           data,
           options: Transferable[] | StructuredSerializeOptions = [],
         ) => {
-          if (data.type === 'stop-transport') probe.resets++;
+          if (
+            data.type === 'stop-transport' ||
+            (data.type === 'application-command' &&
+              data.command?.type === 'stop-transport')
+          )
+            probe.resets++;
           send(
             data,
             Array.isArray(options) ? options : (options.transfer ?? []),
@@ -769,6 +774,17 @@ test('input switching resets accepted ramps only on success and preserves FX on 
   await expect(
     preview.getByRole('button', { name: 'Bypass Input filter' }),
   ).toBeEnabled();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as unknown as { fxSwitch: SwitchProbe }
+        ).fxSwitch.fxSnapshots.some(
+          (slot) => slot.config.cutoffHz === 20 && !slot.transitioning,
+        ),
+      ),
+    )
+    .toBe(true);
   const success = await page.evaluate(
     () => (window as unknown as { fxSwitch: SwitchProbe }).fxSwitch,
   );

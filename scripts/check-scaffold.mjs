@@ -37,6 +37,15 @@ assert(skills.some((s) => s.name === 'to-issues'));
 const original = await readFile(new URL('to-tickets/SKILL.md', base), 'utf8');
 const alias = await readFile(new URL('to-issues/SKILL.md', base), 'utf8');
 assert.equal(alias, original.replace('name: to-tickets', 'name: to-issues'));
+const applicationContract = await readFile(
+  new URL('../packages/domain/src/audio.ts', import.meta.url),
+  'utf8',
+);
+assert.doesNotMatch(
+  applicationContract,
+  /from\s+['"](?:react|@tauri-apps\/|@loopbeats\/audio-client|tauri)['"]|\b(?:AudioContext|AudioWorkletNode|navigator|window|document)\b/,
+  'The platform-neutral audio contract must not depend on browser or desktop-shell APIs.',
+);
 console.log(
   `Scaffold valid: ${required.length} paths, ${skills.length} project skills.`,
 );

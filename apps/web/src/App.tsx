@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import type { FxScope, TrackId } from '@loopbeats/domain';
-import { AudioClient } from '@loopbeats/audio-client';
+import type { AudioClient } from '@loopbeats/audio-client';
 import { recoveryDeletionNotice } from './recovery-deletion-notice';
 import { TrackStrip } from './TrackStrip';
 import { SessionExport } from './SessionExport';
@@ -86,7 +86,7 @@ function writeSettings(settings: StoredSettings): boolean {
   }
 }
 
-export function App() {
+export function App({ client }: { client: AudioClient }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroup>('Session');
   const [fxEditorOpen, setFxEditorOpen] = useState(false);
@@ -175,13 +175,6 @@ export function App() {
         )?.focus();
     };
   }, [pendingRemoval]);
-  const [client] = useState(
-    () =>
-      new AudioClient({
-        wasm: `${import.meta.env.BASE_URL}audio/loop-engine.wasm`,
-        worklet: `${import.meta.env.BASE_URL}audio/processor.js`,
-      }),
-  );
   const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const recovery = useSyncExternalStore(
     client.subscribe,

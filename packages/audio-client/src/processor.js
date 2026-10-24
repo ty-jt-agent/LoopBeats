@@ -29,12 +29,38 @@ class LoopProcessor extends AudioWorkletProcessor {
     );
     this.memory = this.engine.memory.buffer;
     this.frames = 0;
+    this.blockSequence = 0;
+    this.generation = options.processorOptions.generation;
+    this.commands = [];
     this.inputLevel = 0;
     this.outputLevel = 0;
     this.failed = false;
     this.exportSession = null;
     this.importSession = null;
     this.port.onmessage = ({ data }) => {
+      if (data.type === 'set-generation') {
+        this.generation = data.generation;
+        return;
+      }
+      if (data.type === 'application-command') {
+        const { commandId, generation, command } = data;
+        if (generation !== this.generation) {
+          this.port.postMessage({ commandId, generation, status: 'stale' });
+          return;
+        }
+        // AudioClient bounds outstanding commands to this same capacity.
+        if (this.commands.length >= 64) {
+          this.port.postMessage({
+            commandId,
+            generation,
+            status: 'failed',
+            error: 'Audio command capacity exceeded.',
+          });
+          return;
+        }
+        this.commands.push({ commandId, generation, command });
+        return;
+      }
       if (data.type === 'set-playback-fx') {
         const config = data.config;
         const valid =
@@ -498,6 +524,91 @@ class LoopProcessor extends AudioWorkletProcessor {
         }
       : { type: 'None' };
   }
+  applyApplicationCommand(command) {
+    if (this.failed) return false;
+    switch (command.type) {
+      case 'set-track-gain':
+        if (
+          (command.trackId !== 0 && command.trackId !== 1) ||
+          !Number.isFinite(command.gain)
+        )
+          return false;
+        this.engine.set_track_gain(command.trackId, command.gain);
+        break;
+      case 'set-track-mute':
+        if (
+          (command.trackId !== 0 && command.trackId !== 1) ||
+          typeof command.muted !== 'boolean'
+        )
+          return false;
+        this.engine.set_track_mute(command.trackId, command.muted ? 1 : 0);
+        break;
+      case 'set-master-gain':
+        if (!Number.isFinite(command.gain)) return false;
+        this.engine.set_master_gain(command.gain);
+        break;
+      case 'monitoring':
+        if (typeof command.enabled !== 'boolean') return false;
+        this.engine.set_monitoring(command.enabled ? 1 : 0);
+        break;
+      case 'set-mode':
+        if (
+          (command.trackId !== 0 && command.trackId !== 1) ||
+          (command.mode !== 'Loop' && command.mode !== 'OneShot')
+        )
+          return false;
+        this.engine.set_mode(
+          command.trackId,
+          command.mode === 'OneShot' ? 1 : 0,
+        );
+        break;
+      case 'record':
+        if (command.trackId !== 0 && command.trackId !== 1) return false;
+        this.engine.record(command.trackId);
+        break;
+      case 'play':
+        if (command.trackId !== 0 && command.trackId !== 1) return false;
+        this.engine.play(command.trackId);
+        break;
+      case 'stop-track':
+      case 'clear':
+        if (command.trackId !== 0 && command.trackId !== 1) return false;
+        if (command.type === 'clear') this.engine.clear(command.trackId);
+        else this.engine.stop_track(command.trackId);
+        break;
+      case 'stop-transport':
+        this.engine.stop_transport();
+        break;
+      case 'start-tracks': {
+        const active = (id) => {
+          const state = this.engine.track_state(id);
+          return (
+            state === TRACK_STATE.Recording ||
+            state === TRACK_STATE.Playing ||
+            state === TRACK_STATE.Overdubbing
+          );
+        };
+        if (!active(0) && !active(1)) {
+          for (let id = 0; id < 2; id++)
+            if (
+              this.engine.track_state(id) === TRACK_STATE.Stopped &&
+              this.engine.can_play(id)
+            )
+              this.engine.play(id);
+        }
+        break;
+      }
+      case 'reset':
+        this.engine.reset();
+        break;
+      case 'interrupt':
+        this.engine.interrupt();
+        break;
+      default:
+        return false;
+    }
+    return true;
+  }
   publishSnapshot() {
     this.port.postMessage({
       type: 'snapshot',
@@ -552,6 +663,28 @@ class LoopProcessor extends AudioWorkletProcessor {
       return false;
     }
     const source = inputs[0][0];
+    this.blockSequence++;
+    const commandCount = Math.min(32, this.commands.length);
+    for (let index = 0; index < commandCount; index++) {
+      const item = this.commands.shift();
+      if (item.generation !== this.generation) {
+        this.port.postMessage({
+          commandId: item.commandId,
+          generation: item.generation,
+          status: 'stale',
+        });
+      } else {
+        const applied = this.applyApplicationCommand(item.command);
+        this.port.postMessage({
+          commandId: item.commandId,
+          generation: item.generation,
+          status: applied ? 'applied' : 'failed',
+          applicationFrame: this.frames,
+          blockSequence: this.blockSequence,
+          error: applied ? undefined : 'The audio engine rejected the command.',
+        });
+      }
+    }
     for (let i = 0; i < count; i++) this.input[i] = source?.[i] ?? 0;
     if (this.engine.process(count) !== count) {
       this.failed = true;

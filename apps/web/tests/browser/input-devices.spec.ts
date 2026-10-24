@@ -214,9 +214,15 @@ test('Master configuration survives successful input switching and failed switch
             message &&
             typeof message === 'object' &&
             'type' in message &&
-            message.type === 'stop-transport'
+            (message.type === 'stop-transport' ||
+              (message.type === 'application-command' &&
+                'command' in message &&
+                typeof message.command === 'object' &&
+                message.command !== null &&
+                'type' in message.command &&
+                message.command.type === 'stop-transport'))
           )
-            commands.push(message.type);
+            commands.push('stop-transport');
           return Reflect.apply(postMessage, port, messageArgs);
         };
         return node;
