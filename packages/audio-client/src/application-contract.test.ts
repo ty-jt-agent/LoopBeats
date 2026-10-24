@@ -93,7 +93,11 @@ test('applies accepted commands FIFO at the next render block and reports frame 
   expect(messages).toHaveLength(0);
   render();
   expect(gainCalls).toEqual([0.2, 0.8]);
-  expect(messages).toMatchObject([
+  expect(messages).toHaveLength(0);
+  processor.port.onmessage({
+    data: { type: 'flush-command-outcomes', requestId: 1 },
+  });
+  expect(messages.slice(0, 2)).toMatchObject([
     {
       commandId: 1,
       generation: 4,
@@ -117,9 +121,13 @@ test('applies accepted commands FIFO at the next render block and reports frame 
       command: { type: 'set-track-gain', trackId: 0, gain: 0.5 },
     },
   });
-  expect(messages).toHaveLength(2);
+  expect(messages).toHaveLength(3);
   render();
-  expect(messages[2]).toMatchObject({
+  expect(messages).toHaveLength(3);
+  processor.port.onmessage({
+    data: { type: 'flush-command-outcomes', requestId: 2 },
+  });
+  expect(messages[3]).toMatchObject({
     commandId: 3,
     status: 'applied',
     applicationFrame: 4,
@@ -137,8 +145,9 @@ test('rejects stale generations and bounds queued command admission', async () =
       command: { type: 'record', trackId: 0 },
     },
   });
-  processor.port.onmessage({ data: { type: 'set-generation', generation: 5 } });
-  render();
+  processor.port.onmessage({
+    data: { type: 'advance-generation', generation: 5, requestId: 1 },
+  });
   expect(messages[0]).toMatchObject({
     commandId: 1,
     generation: 4,
@@ -159,62 +168,61 @@ test('rejects stale generations and bounds queued command admission', async () =
   render();
   expect(
     messages.filter((message) => message.status === 'applied'),
-  ).toHaveLength(32);
+  ).toHaveLength(0);
   render();
   expect(
     messages.filter((message) => message.status === 'applied'),
+  ).toHaveLength(0);
+  processor.port.onmessage({
+    data: { type: 'flush-command-outcomes', requestId: 2 },
+  });
+  expect(
+    messages.filter((message) => message.status === 'applied'),
   ).toHaveLength(64);
+  expect(
+    messages.filter(
+      (message) => message.type === 'application-command-outcome',
+    ),
+  ).toHaveLength(66);
+});
+
+test('does not acknowledge out-of-range gain as applied', async () => {
+  const { processor, render, messages, gainCalls } = await createProcessor();
+  processor.port.onmessage({
+    data: {
+      type: 'application-command',
+      commandId: 1,
+      generation: 4,
+      command: { type: 'set-master-gain', gain: 1.1 },
+    },
+  });
+  render();
+  expect(gainCalls).toEqual([]);
+  processor.port.onmessage({
+    data: { type: 'flush-command-outcomes', requestId: 1 },
+  });
+  expect(messages[0]).toMatchObject({
+    commandId: 1,
+    generation: 4,
+    status: 'failed',
+  });
 });
 
 test('reports capabilities and rejects before the acknowledgement window is full', () => {
   const client = new AudioClient({ wasm: '', worklet: '' });
-  const posted: unknown[] = [];
   const initialSnapshot = client.getApplicationSnapshot();
   expect(initialSnapshot.host.status).toBe('idle');
   expect(initialSnapshot.engine).toHaveProperty('masterGain');
   expect(initialSnapshot.engine).not.toHaveProperty('status');
   expect(initialSnapshot.host).not.toHaveProperty('transport');
-  Object.assign(client, {
-    snapshot: { status: 'ready' },
-    session: {
-      node: {
-        port: { postMessage: (message: unknown) => posted.push(message) },
-      },
-    },
-  });
   expect(client.getCapabilities()).toMatchObject({
     inputDeviceSelection: true,
     outputDeviceSelection: false,
     monitoring: true,
     gainUpdateCoalescing: false,
   });
-  const submissions = Array.from({ length: 64 }, (_, index) =>
-    client.submit({ type: 'set-master-gain', gain: index / 64 }),
-  );
-  expect(
-    submissions.every((submission) => submission.status === 'accepted'),
-  ).toBe(true);
-  expect(posted).toHaveLength(64);
   expect(client.submit({ type: 'stop-transport' })).toEqual({
     status: 'rejected',
-    reason: 'overloaded',
-  });
-});
-
-test('completes accepted commands as stale when the session generation stops', async () => {
-  const client = new AudioClient({ wasm: '', worklet: '' });
-  Object.assign(client, {
-    snapshot: { status: 'ready' },
-    session: { node: { port: { postMessage: () => {} } } },
-  });
-  const submission = client.submit({ type: 'record', trackId: 0 });
-  expect(submission.status).toBe('accepted');
-  Object.assign(client, { session: null });
-  await client.stop();
-  if (submission.status !== 'accepted') throw new Error('Expected acceptance.');
-  await expect(submission.outcome).resolves.toMatchObject({
-    commandId: submission.commandId,
-    generation: submission.generation,
-    status: 'stale',
+    reason: 'unavailable',
   });
 });

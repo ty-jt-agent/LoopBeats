@@ -11,6 +11,6 @@ const audioApplication = new AudioClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App client={audioApplication} />
+    <App audio={audioApplication} web={audioApplication} />
   </StrictMode>,
 );

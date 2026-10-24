@@ -1,4 +1,5 @@
 export type { FxCutoffAdjustment } from '@loopbeats/session-format';
+export type { RecoveryState } from './session-recovery';
 import type {
   FxConfig,
   SessionFxSnapshot,
@@ -48,6 +49,8 @@ type Session = {
   stream?: MediaStream;
   node?: AudioWorkletNode;
   interval?: ReturnType<typeof setInterval>;
+  ackInterval?: ReturnType<typeof setInterval>;
+  flushPending?: boolean;
   cancelStartup?: () => void;
   inputDeviceId?: string;
   preferredInputId?: string;
@@ -70,7 +73,17 @@ type WorkletSnapshot = {
 type WorkletCommandOutcome = Extract<
   AudioCommandOutcome,
   { status: 'applied' | 'stale' | 'failed' }
->;
+> & { type: 'application-command-outcome' };
+type WorkletLifecycleReply =
+  | {
+      type: 'command-outcomes-flushed';
+      requestId: number;
+    }
+  | {
+      type: 'generation-advanced';
+      requestId: number;
+      generation: number;
+    };
 const emptyTrack = (): TrackSnapshot => ({
   gain: 1,
   muted: false,
@@ -147,6 +160,24 @@ type DestructiveResult =
   | { status: 'stale' }
   | { status: 'failed'; error: string };
 
+export type SessionExportOptions = {
+  signal?: AbortSignal;
+  onProgress?: (fraction: number) => void;
+};
+
+export type SessionImportOptions = {
+  signal?: AbortSignal;
+  onProgress?: (fraction: number) => void;
+  onCommitting?: () => void;
+  confirmReplace: (signal: AbortSignal) => Promise<boolean>;
+  confirmConversion?: (
+    sourceRate: number,
+    targetRate: number,
+    signal: AbortSignal,
+    fxAdjustments: readonly import('@loopbeats/session-format').FxCutoffAdjustment[],
+  ) => Promise<boolean>;
+};
+
 /** Owns browser audio resources; React consumes immutable engine/lifecycle snapshots. */
 const MAX_PENDING_COMMANDS = 64;
 
@@ -182,10 +213,18 @@ export class AudioClient implements AudioApplication {
   private attempt = 0;
   private generation = 0;
   private commandSequence = 0;
+  private lifecycleSequence = 0;
+  private readonly lifecycleWaiters = new Map<number, () => void>();
   private readonly pendingCommands = new Map<
     number,
     (outcome: AudioCommandOutcome) => void
   >();
+  private readonly pendingCommandPayloads = new Map<
+    number,
+    AudioApplicationCommand
+  >();
+  private readonly pendingCommandGenerations = new Map<number, number>();
+  private destructiveSubmissionPending = false;
   private inputError: string | null = null;
   private exportSequence = 0;
   private cancelExport: (() => void) | null = null;
@@ -276,25 +315,75 @@ export class AudioClient implements AudioApplication {
     this.recoverySession?.observe(snapshot, this.recordingRevisions);
     for (const listener of this.listeners) listener();
   }
-  private advanceGeneration(): void {
-    const oldGeneration = this.generation++;
+  private settlePendingAfterHostLoss(): void {
     for (const [commandId, resolve] of this.pendingCommands) {
-      resolve({ commandId, generation: oldGeneration, status: 'stale' });
+      resolve({
+        commandId,
+        generation:
+          this.pendingCommandGenerations.get(commandId) ?? this.generation,
+        status: 'failed',
+        error: 'The audio host stopped before confirming command application.',
+      });
       this.pendingCommands.delete(commandId);
+      this.pendingCommandPayloads.delete(commandId);
+      this.pendingCommandGenerations.delete(commandId);
     }
+  }
+  private advanceGeneration(session = this.session): Promise<void> {
+    const generation = ++this.generation;
+    if (!session?.node) {
+      this.settlePendingAfterHostLoss();
+      return Promise.resolve();
+    }
+    const requestId = ++this.lifecycleSequence;
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        this.lifecycleWaiters.delete(requestId);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        this.settlePendingAfterHostLoss();
+        finish();
+      }, 1000);
+      this.lifecycleWaiters.set(requestId, finish);
+      try {
+        session.node!.port.postMessage({
+          type: 'advance-generation',
+          generation,
+          requestId,
+        });
+      } catch {
+        this.settlePendingAfterHostLoss();
+        finish();
+      }
+    });
   }
   private finishCommand(outcome: AudioCommandOutcome): void {
     const resolve = this.pendingCommands.get(outcome.commandId);
     if (!resolve) return;
     this.pendingCommands.delete(outcome.commandId);
+    this.pendingCommandPayloads.delete(outcome.commandId);
+    this.pendingCommandGenerations.delete(outcome.commandId);
     resolve(outcome);
   }
   submit(command: AudioApplicationCommand): AudioCommandSubmission {
     const session = this.session;
     if (this.snapshot.status !== 'ready' || !session?.node)
       return { status: 'rejected', reason: 'unavailable' };
+    if (this.destructiveSubmissionPending)
+      return { status: 'rejected', reason: 'overloaded' };
     if (this.pendingCommands.size >= MAX_PENDING_COMMANDS)
       return { status: 'rejected', reason: 'overloaded' };
+    if (
+      (command.type === 'set-track-gain' ||
+        command.type === 'set-master-gain') &&
+      (!Number.isFinite(command.gain) || command.gain < 0 || command.gain > 1)
+    )
+      return { status: 'rejected', reason: 'invalid-command' };
     const commandId = ++this.commandSequence;
     const generation = this.generation;
     let resolve!: (outcome: AudioCommandOutcome) => void;
@@ -302,18 +391,92 @@ export class AudioClient implements AudioApplication {
       resolve = done;
     });
     this.pendingCommands.set(commandId, resolve);
+    this.pendingCommandGenerations.set(commandId, generation);
+    const deletionBarrier =
+      command.type === 'clear' ||
+      command.type === 'reset' ||
+      (command.type === 'stop-transport' &&
+        (this.snapshot.tracks.some((track) => track.state === 'Recording') ||
+          this.hasPendingInitialRecord()));
+    if (deletionBarrier) {
+      this.destructiveSubmissionPending = true;
+      void this.dispatchDestructiveCommand(
+        session,
+        generation,
+        commandId,
+        command,
+      );
+    } else if (!this.postCommand(session, generation, commandId, command)) {
+      this.pendingCommands.delete(commandId);
+      this.pendingCommandGenerations.delete(commandId);
+      return { status: 'rejected', reason: 'unavailable' };
+    }
+    return { status: 'accepted', commandId, generation, outcome };
+  }
+  private hasPendingInitialRecord(): boolean {
+    return this.snapshot.tracks.some(
+      (track, trackId) =>
+        track.state === 'Empty' &&
+        [...this.pendingCommands.keys()].some((commandId) => {
+          const command = this.pendingCommandPayloads.get(commandId);
+          return command?.type === 'record' && command.trackId === trackId;
+        }),
+    );
+  }
+  private postCommand(
+    session: Session,
+    generation: number,
+    commandId: number,
+    command: AudioApplicationCommand,
+  ): boolean {
     try {
-      session.node.port.postMessage({
+      session.node?.port.postMessage({
         type: 'application-command',
         commandId,
         generation,
         command,
       });
+      this.pendingCommandPayloads.set(commandId, command);
+      return Boolean(session.node);
     } catch {
-      this.pendingCommands.delete(commandId);
-      return { status: 'rejected', reason: 'unavailable' };
+      return false;
     }
-    return { status: 'accepted', commandId, generation, outcome };
+  }
+  private async dispatchDestructiveCommand(
+    session: Session,
+    generation: number,
+    commandId: number,
+    command: AudioApplicationCommand,
+  ): Promise<void> {
+    try {
+      await this.deletionBarrier();
+      if (
+        this.session !== session ||
+        this.generation !== generation ||
+        this.snapshot.status !== 'ready'
+      ) {
+        this.finishCommand({ commandId, generation, status: 'stale' });
+        return;
+      }
+      if (!this.postCommand(session, generation, commandId, command))
+        this.finishCommand({
+          commandId,
+          generation,
+          status: 'failed',
+          error: 'The audio command could not be delivered.',
+        });
+    } catch (error) {
+      this.recoverySession?.report(error);
+      this.finishCommand({
+        commandId,
+        generation,
+        status: 'failed',
+        error:
+          error instanceof Error ? error.message : 'Recovery deletion failed.',
+      });
+    } finally {
+      this.destructiveSubmissionPending = false;
+    }
   }
   private disconnectInput(session: Session) {
     session.source?.disconnect();
@@ -335,12 +498,28 @@ export class AudioClient implements AudioApplication {
   }
   private poll(session: Session) {
     clearInterval(session.interval);
+    clearInterval(session.ackInterval);
     session.interval = setInterval(() => {
       if (this.session === session)
         session.node?.port.postMessage({
           type: 'snapshot',
         } satisfies AudioCommand);
     }, 100);
+    session.ackInterval = setInterval(() => {
+      if (
+        this.session !== session ||
+        !session.node ||
+        session.flushPending ||
+        this.pendingCommands.size === 0
+      )
+        return;
+      const requestId = ++this.lifecycleSequence;
+      session.flushPending = true;
+      session.node.port.postMessage({
+        type: 'flush-command-outcomes',
+        requestId,
+      });
+    }, 16);
   }
   private interrupt(session: Session, reason: string) {
     if (
@@ -352,11 +531,12 @@ export class AudioClient implements AudioApplication {
     this.playbackFx.cancelQueued();
     this.cancelImport?.();
     ++this.attempt;
-    this.advanceGeneration();
+    void this.advanceGeneration(session);
     session.interrupted = true;
     session.recovering = false;
     session.finishRecovery?.(new Error(reason));
     clearInterval(session.interval);
+    clearInterval(session.ackInterval);
     this.disconnectInput(session);
     session.node?.disconnect();
     session.node?.port.postMessage({
@@ -383,6 +563,7 @@ export class AudioClient implements AudioApplication {
     if (this.exportOwner === session) this.cancelExport?.();
     if (this.importOwner === session) this.cancelImport?.();
     clearInterval(session.interval);
+    clearInterval(session.ackInterval);
     session.cancelStartup?.();
     session.finishRecovery?.(new Error('Audio recovery canceled'));
     session.context.onstatechange = null;
@@ -398,9 +579,10 @@ export class AudioClient implements AudioApplication {
   }
   private async fail(session: Session, message: string) {
     if (this.session !== session) return;
-    this.session = null;
     this.attempt++;
-    this.advanceGeneration();
+    await this.advanceGeneration(session);
+    if (this.session !== session) return;
+    this.session = null;
     this.publish({ ...idle(), status: 'error', error: message });
     await this.release(session);
   }
@@ -414,7 +596,7 @@ export class AudioClient implements AudioApplication {
     )
       return;
     const attempt = ++this.attempt;
-    this.advanceGeneration();
+    void this.advanceGeneration();
     const generation = this.generation;
     this.inputError = null;
     this.publish({ ...idle(), status: 'starting' });
@@ -505,8 +687,17 @@ export class AudioClient implements AudioApplication {
           | InputFxReply
           | PlaybackFxReply
           | WorkletCommandOutcome
+          | WorkletLifecycleReply
         >) => {
-          if ('commandId' in data && 'generation' in data) {
+          if (data.type === 'generation-advanced') {
+            this.lifecycleWaiters.get(data.requestId)?.();
+            return;
+          }
+          if (data.type === 'command-outcomes-flushed') {
+            if (this.session === current) current.flushPending = false;
+            return;
+          }
+          if (data.type === 'application-command-outcome') {
             this.finishCommand(data);
             if (data.status === 'applied' && this.session === current)
               current.node?.port.postMessage({ type: 'snapshot' });
@@ -699,11 +890,6 @@ export class AudioClient implements AudioApplication {
     const session = this.session;
     if (!session?.node || this.snapshot.status !== 'interrupted') return;
     const attempt = ++this.attempt;
-    this.advanceGeneration();
-    session.node.port.postMessage({
-      type: 'set-generation',
-      generation: this.generation,
-    });
     session.recovering = true;
     session.recoveryAfterFrames = undefined;
     this.publish({ ...this.snapshot, status: 'recovering' });
@@ -753,6 +939,13 @@ export class AudioClient implements AudioApplication {
       if (!stream.getAudioTracks().some((track) => track.readyState === 'live'))
         throw new Error('The audio input is no longer available.');
       this.watchInput(session);
+      session.recoveryAfterFrames = this.snapshot.processedFrames;
+      session.source = session.context.createMediaStreamSource(stream);
+      session.source.connect(session.node).connect(session.context.destination);
+      // Reconnect the graph before waiting for the worklet to acknowledge the
+      // new generation. A disconnected processor may not dispatch port messages.
+      await this.advanceGeneration(session);
+      if (attempt !== this.attempt) return;
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(
           () => reject(new Error('Audio recovery timed out')),
@@ -764,11 +957,6 @@ export class AudioClient implements AudioApplication {
           if (error) reject(error);
           else resolve();
         };
-        session.recoveryAfterFrames = this.snapshot.processedFrames;
-        session.source = session.context.createMediaStreamSource(stream);
-        session.source
-          .connect(session.node!)
-          .connect(session.context.destination);
         this.poll(session);
       });
     } catch (error) {
@@ -793,12 +981,7 @@ export class AudioClient implements AudioApplication {
     this.submit({ type: 'monitoring', enabled });
   }
   /** Downloadable completed-session archive; no browser infrastructure escapes this client. */
-  async exportSession(
-    options: {
-      signal?: AbortSignal;
-      onProgress?: (fraction: number) => void;
-    } = {},
-  ): Promise<Blob> {
+  async exportSession(options: SessionExportOptions = {}): Promise<Blob> {
     await this.recoverySession?.yieldToUser();
     return this.captureSession(options);
   }
@@ -932,18 +1115,7 @@ export class AudioClient implements AudioApplication {
   /** Validate/stage first; the worklet atomically installs both tracks on commit. */
   async importSession(
     file: Blob,
-    options: {
-      signal?: AbortSignal;
-      onProgress?: (fraction: number) => void;
-      onCommitting?: () => void;
-      confirmReplace: (signal: AbortSignal) => Promise<boolean>;
-      confirmConversion?: (
-        sourceRate: number,
-        targetRate: number,
-        signal: AbortSignal,
-        fxAdjustments: readonly import('@loopbeats/session-format').FxCutoffAdjustment[],
-      ) => Promise<boolean>;
-    },
+    options: SessionImportOptions,
   ): Promise<boolean> {
     return this.restoreSession(file, options);
   }
@@ -1242,12 +1414,10 @@ export class AudioClient implements AudioApplication {
     if (config?.type === 'LowPass') this.setInputFx({ ...config, bypassed });
   }
   async clear(trackId: TrackId): Promise<DestructiveResult> {
-    return this.destructiveAction(() =>
-      this.command({ type: 'clear', trackId }),
-    );
+    return this.destructiveCommand({ type: 'clear', trackId });
   }
   async reset(): Promise<DestructiveResult> {
-    return this.destructiveAction(() => this.command({ type: 'reset' }));
+    return this.destructiveCommand({ type: 'reset' });
   }
   setTrackGain(trackId: TrackId, gain: number): void {
     this.command({ type: 'set-track-gain', trackId, gain });
@@ -1271,11 +1441,7 @@ export class AudioClient implements AudioApplication {
     this.command({ type: 'stop-track', trackId });
   }
   stopTransport(): void {
-    if (this.snapshot.tracks.some((track) => track.state === 'Recording')) {
-      void this.destructiveAction(() =>
-        this.command({ type: 'stop-transport' }),
-      );
-    } else this.command({ type: 'stop-transport' });
+    this.command({ type: 'stop-transport' });
   }
   startTracks(): void {
     this.command({ type: 'start-tracks' });
@@ -1303,12 +1469,27 @@ export class AudioClient implements AudioApplication {
       };
     }
   }
+  private async destructiveCommand(
+    command: Extract<AudioApplicationCommand, { type: 'clear' | 'reset' }>,
+  ): Promise<DestructiveResult> {
+    const submission = this.submit(command);
+    if (submission.status === 'rejected')
+      return {
+        status: 'failed',
+        error: `Command rejected: ${submission.reason}.`,
+      };
+    const outcome = await submission.outcome;
+    if (outcome.status === 'applied') return { status: 'sent' };
+    if (outcome.status === 'stale') return { status: 'stale' };
+    return { status: 'failed', error: outcome.error ?? 'Command failed.' };
+  }
   async stop(): Promise<void> {
     const attempt = ++this.attempt;
-    this.advanceGeneration();
     const session = this.session;
-    this.session = null;
+    const generationReady = this.advanceGeneration(session);
     this.publish({ ...idle(), status: 'stopping' });
+    await generationReady;
+    if (this.session === session) this.session = null;
     if (session) await this.release(session);
     if (attempt === this.attempt) this.publish(idle());
   }

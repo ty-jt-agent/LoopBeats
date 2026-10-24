@@ -1,11 +1,17 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
-import type { AudioSnapshot, TrackSnapshot } from '@loopbeats/domain';
+import type {
+  AudioApplicationCommand,
+  AudioSnapshot,
+  TrackSnapshot,
+} from '@loopbeats/domain';
 import { App } from './App';
 import { AudioClient } from '@loopbeats/audio-client';
 
-const renderApp = () =>
-  render(<App client={new AudioClient({ wasm: '', worklet: '' })} />);
+const renderApp = () => {
+  const client = new AudioClient({ wasm: '', worklet: '' });
+  return render(<App audio={client} web={client} />);
+};
 
 const host = vi.hoisted(() => ({
   snapshot: null as unknown as AudioSnapshot,
@@ -15,6 +21,7 @@ const host = vi.hoisted(() => ({
   switchInput: vi.fn(),
   stopTransport: vi.fn(),
   startTracks: vi.fn(),
+  commandId: 0,
   recovery: {
     status: 'Recovery disabled.',
     owner: false,
@@ -24,9 +31,56 @@ const host = vi.hoisted(() => ({
     offerVisible: true,
   },
 }));
+let cachedHostSnapshot: AudioSnapshot | null = null;
+let cachedApplicationSnapshot: ReturnType<
+  InstanceType<typeof AudioClient>['getApplicationSnapshot']
+> | null = null;
+const getApplicationSnapshot = () => {
+  if (!cachedApplicationSnapshot || cachedHostSnapshot !== host.snapshot) {
+    cachedHostSnapshot = host.snapshot;
+    cachedApplicationSnapshot = {
+      engine: host.snapshot,
+      host: {
+        status: host.snapshot.status,
+        inputDeviceId: host.snapshot.inputDeviceId,
+        error: host.snapshot.error,
+        sampleRate: host.snapshot.sampleRate,
+      },
+    };
+  }
+  return cachedApplicationSnapshot;
+};
 vi.mock('@loopbeats/audio-client', () => ({
   AudioClient: class {
     getSnapshot = () => host.snapshot;
+    getApplicationSnapshot = getApplicationSnapshot;
+    getCapabilities = () => ({
+      inputDeviceSelection: true,
+      outputDeviceSelection: false,
+      monitoring: true,
+      gainUpdateCoalescing: false,
+      supportedFxScopes: [0, 1, 2, 3],
+    });
+    getSessionGeneration = () => 0;
+    submit = (command: AudioApplicationCommand) => {
+      const commandId = ++host.commandId;
+      if (command.type === 'record') host.record(command.trackId);
+      if (command.type === 'play') host.play(command.trackId);
+      if (command.type === 'stop-transport') host.stopTransport();
+      if (command.type === 'start-tracks') host.startTracks();
+      return {
+        status: 'accepted' as const,
+        commandId,
+        generation: 0,
+        outcome: Promise.resolve({
+          commandId,
+          generation: 0,
+          status: 'applied' as const,
+          applicationFrame: 0,
+          blockSequence: 1,
+        }),
+      };
+    };
     getRecoverySnapshot = () => host.recovery;
     enableRecovery = () => () => {};
     subscribe = (listener: () => void) => {

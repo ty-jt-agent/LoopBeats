@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { FxConfig, FxScope, FxSnapshot } from '@loopbeats/domain';
-import type { AudioClient } from '@loopbeats/audio-client';
 import type { AudioSnapshot } from '@loopbeats/domain';
+import type { WebAudioExtensions } from './web-audio-extensions';
 import { fxStateLabel } from './fx-state';
 
 const scopes: readonly { id: FxScope; name: string }[] = [
@@ -56,7 +56,7 @@ export function FxEditor({
   onScopeChange,
   onClose,
 }: {
-  client: AudioClient;
+  client: WebAudioExtensions;
   snapshot: AudioSnapshot;
   enabled: boolean;
   scope: FxScope;
