@@ -24,6 +24,13 @@ Automatic recovery maintains a browser-stored snapshot and offers recovery after
 restart. It may include in-progress capture data; the exact incomplete-capture
 and overdub recovery behavior remains open for the specification.
 
+This browser recovery decision does not require Windows recovery in the native
+audio prototype. Windows automatic recovery and checkpointing are explicitly
+deferred pending prototype validation and session-transfer measurements; see
+[ADR-0013](0013-windows-recovery-deferral.md). Manual portable session
+import/export remains in the planned Windows integration scope, and this
+deferral does not change Web recovery.
+
 Import validates the complete archive before changing the live session. If the
 archive sample rate differs from the current engine, the UI warns that conversion
 will occur and may affect fidelity, and converts only after the user accepts.

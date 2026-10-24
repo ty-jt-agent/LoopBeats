@@ -1,0 +1,5 @@
+# Platform hosts around one portable audio engine
+
+Status: accepted, 2026-10-24.
+
+Keep one portable Rust LoopEngine as the authority for transport, track behavior, recording, overdubbing, playback, mixing, and effects across Web/WASM and Windows/native. Each platform has a separate audio host and adapter: the Web host uses browser audio APIs, while the Windows host performs microphone capture, DSP, monitoring, recording, and playback in the native Rust audio path. The Windows WebView may reuse the React/TypeScript interface, but it is not an audio host or timing authority; its platform-neutral audio application contract carries bounded commands and acknowledged snapshots only, never live PCM. Real-time processing remains independent of UI responsiveness and performs no blocking I/O, uncontrolled allocation, or calls into the interface. This boundary preserves the working Web application and session semantics while allowing Windows audio I/O and lifecycle to evolve independently. Tauri 2 is the initial Windows shell; the numerical latency target remains open. See [ADR-0008](0008-tauri-windows-shell.md).
