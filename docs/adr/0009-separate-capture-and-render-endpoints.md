@@ -1,0 +1,9 @@
+# Support separate capture and render endpoints in the Windows prototype
+
+Status: accepted requirement, 2026-10-24; clock-reconciliation implementation remains open.
+
+The initial Windows prototype supports separate capture and render endpoints; a matched duplex interface is a useful baseline, not a prerequisite. Include built-in microphone with wired headphones and USB microphone with built-in wired output in validation. Bluetooth is outside initial low-latency acceptance. Distinct endpoint identities do not prove distinct hardware clocks, and a shared identity does not prove clock alignment. Keep format negotiation, channel mapping, bounded buffering, and any clock reconciliation inside the Windows host. Preserve mono input to the existing engine and its one authoritative sample timeline.
+
+The render stream drives engine processing. Capture transfers samples through a preallocated bounded buffer with explicit startup, underflow, overflow, and discontinuity behavior. Never block an audio thread or allow the buffer to grow without bound to synchronize streams. Investigate adaptive resampling or another justified correction for independently clocked devices; nominally matching rates is not synchronization. WASAPI clock positions are measurement inputs, not a synchronization mechanism. Expose actual stream formats, buffer occupancy, discontinuities, and any drift correction in diagnostics. A low-occupancy warning, delayed callback, or normal adaptive resampling is not by itself a capture discontinuity; see [ADR-0010](0010-interrupt-on-capture-loss.md) for confirmed sample loss behavior.
+
+Validate in order: matched-device baseline, separate endpoints, then a sustained run using an independently clocked pair. Measure complete monitoring round-trip latency, buffer stability, and glitches. This requirement establishes device coverage and measurement, not a specific correction algorithm or latency guarantee.

@@ -102,6 +102,14 @@ _Avoid_: Project file, saved settings
 **Recovery snapshot**: An automatically maintained browser-stored representation of the current session used to recover work after an unexpected shutdown or crash.
 _Avoid_: Autosave file, session file
 
+**Audio host**: The platform-specific part of LoopBeats that connects audio devices to the loop engine and manages audio-session lifecycle.
+
+**Audio application contract**: The platform-neutral commands and acknowledged session state used by the interface to control and observe an audio host.
+
+**Capture discontinuity**: Confirmed loss, dropping, or replacement with synthetic silence of captured samples before they reach the loop engine.
+
+**Audio interruption**: A host event that stops valid session processing, disables monitoring and resets transport while retaining completed recordings and captured overdub additions; unfinished initial recording is discarded.
+
 **Session export**: The operation that packages a session file for download outside the browser.
 
 **Session import**: The operation that validates a session file and replaces the current session with its contents.
