@@ -113,7 +113,7 @@ export type AudioCommandSubmission =
     }
   | {
       readonly status: 'rejected';
-      readonly reason: 'unavailable' | 'overloaded';
+      readonly reason: 'unavailable' | 'overloaded' | 'invalid-command';
     };
 
 export interface AudioCapabilities {

@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
-import type { AudioClient } from '@loopbeats/audio-client';
+import type { AudioApplication } from '@loopbeats/domain';
+import type { WebAudioExtensions } from './web-audio-extensions';
 import { App } from './App';
 
 const snapshot = {
@@ -31,6 +32,15 @@ const snapshot = {
     positionSamples: 0,
   })),
 };
+const appSnapshot = {
+  engine: snapshot,
+  host: {
+    status: snapshot.status,
+    inputDeviceId: snapshot.inputDeviceId,
+    error: snapshot.error,
+    sampleRate: snapshot.sampleRate,
+  },
+};
 const recoverySnapshot = {
   status: 'Recovery disabled.',
   owner: false,
@@ -40,7 +50,18 @@ const recoverySnapshot = {
   offerVisible: true,
 };
 const client = {
-  getSnapshot: () => snapshot,
+  getApplicationSnapshot: () => appSnapshot,
+  getCapabilities: () => ({
+    inputDeviceSelection: true,
+    outputDeviceSelection: false,
+    monitoring: true,
+    gainUpdateCoalescing: false,
+    supportedFxScopes: [0, 1, 2, 3],
+  }),
+  getSessionGeneration: () => 0,
+  submit: () => ({ status: 'rejected', reason: 'unavailable' }),
+  start: async () => {},
+  reinitialize: async () => {},
   getRecoverySnapshot: () => recoverySnapshot,
   subscribe: () => () => {},
   enableRecovery: () => () => {},
@@ -49,10 +70,10 @@ const client = {
   setTrackGain: vi.fn(),
   setTrackMute: vi.fn(),
   setMode: vi.fn(),
-} as unknown as AudioClient;
+} as unknown as AudioApplication & WebAudioExtensions;
 
 test('opens a clearly identified loopstation shell without claiming recordings exist', () => {
-  render(<App client={client} />);
+  render(<App audio={client} web={client} />);
   expect(
     screen.getByRole('heading', { name: 'LoopBeats', level: 1 }),
   ).toBeVisible();

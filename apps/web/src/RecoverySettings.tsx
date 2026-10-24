@@ -1,6 +1,5 @@
-import type { AudioClient } from '@loopbeats/audio-client';
-
-type Recovery = ReturnType<AudioClient['getRecoverySnapshot']>;
+import type { WebAudioExtensions } from './web-audio-extensions';
+import type { RecoveryState } from '@loopbeats/audio-client';
 
 import { recoveryPresentation } from './recovery-presentation';
 
@@ -13,12 +12,12 @@ export function RecoverySettings({
   client,
   restoredPartial,
 }: {
-  recovery: Recovery;
+  recovery: RecoveryState;
   enabled: boolean;
   busy: boolean;
   onRecover: () => void;
   onDiscard: () => void;
-  client: AudioClient;
+  client: WebAudioExtensions;
   restoredPartial: number | null;
 }) {
   const {

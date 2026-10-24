@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { AudioClient, FxCutoffAdjustment } from '@loopbeats/audio-client';
+import type {
+  FxCutoffAdjustment,
+  WebAudioExtensions,
+} from './web-audio-extensions';
 import { RecoverySettings } from './RecoverySettings';
 import { recoveryDeletionNotice } from './recovery-deletion-notice';
 type Confirmation =
@@ -21,7 +24,7 @@ export function SessionImport({
   onConfirmation,
   onRestoreFocus,
 }: {
-  client: AudioClient;
+  client: WebAudioExtensions;
   enabled: boolean;
   disabledReason?: string;
   onBusy: (busy: boolean) => void;

@@ -2,12 +2,19 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { FxScope, TrackId } from '@loopbeats/domain';
-import type { AudioClient } from '@loopbeats/audio-client';
+import type {
+  AudioApplication,
+  AudioApplicationCommand,
+  AudioSnapshot,
+  FxScope,
+  TrackId,
+} from '@loopbeats/domain';
+import type { WebAudioExtensions } from './web-audio-extensions';
 import { recoveryDeletionNotice } from './recovery-deletion-notice';
 import { TrackStrip } from './TrackStrip';
 import { SessionExport } from './SessionExport';
@@ -86,7 +93,23 @@ function writeSettings(settings: StoredSettings): boolean {
   }
 }
 
-export function App({ client }: { client: AudioClient }) {
+const noRecovery = {
+  status: 'Recovery is unavailable in this host.',
+  owner: false,
+  offer: null,
+  savedAt: null,
+  error: null,
+  offerVisible: false,
+} as const;
+const getNoRecoverySnapshot = () => noRecovery;
+
+export function App({
+  audio,
+  web,
+}: {
+  audio: AudioApplication;
+  web?: WebAudioExtensions;
+}) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroup>('Session');
   const [fxEditorOpen, setFxEditorOpen] = useState(false);
@@ -175,12 +198,47 @@ export function App({ client }: { client: AudioClient }) {
         )?.focus();
     };
   }, [pendingRemoval]);
-  const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const recovery = useSyncExternalStore(
-    client.subscribe,
-    client.getRecoverySnapshot,
+  const applicationSnapshot = useSyncExternalStore(
+    audio.subscribe,
+    audio.getApplicationSnapshot,
+  );
+  const snapshot: AudioSnapshot = useMemo(
+    () => ({ ...applicationSnapshot.engine, ...applicationSnapshot.host }),
+    [applicationSnapshot.engine, applicationSnapshot.host],
+  );
+  const recoverySubscribe = web?.subscribe ?? audio.subscribe;
+  const getRecoverySnapshot = web?.getRecoverySnapshot ?? getNoRecoverySnapshot;
+  const recovery = useSyncExternalStore(recoverySubscribe, getRecoverySnapshot);
+  const [commandError, setCommandError] = useState('');
+  const sendCommand = useCallback(
+    (command: AudioApplicationCommand) => {
+      const submission = audio.submit(command);
+      if (submission.status === 'rejected') {
+        setCommandError(
+          submission.reason === 'overloaded'
+            ? 'Audio command capacity is full. Wait briefly and try again.'
+            : submission.reason === 'invalid-command'
+              ? 'That audio setting is invalid.'
+              : 'Audio is unavailable for that command.',
+        );
+        return submission;
+      }
+      setCommandError('');
+      void submission.outcome.then((outcome) => {
+        if (outcome.status !== 'applied')
+          setCommandError(
+            outcome.status === 'failed'
+              ? (outcome.error ??
+                  'The audio engine could not apply the command.')
+              : 'The audio session changed before the command was applied.',
+          );
+      });
+      return submission;
+    },
+    [audio],
   );
   const refreshInputDevices = useCallback(async () => {
+    if (!web) return;
     try {
       const devices =
         (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
@@ -198,9 +256,9 @@ export function App({ client }: { client: AudioClient }) {
         'Could not list input devices. Retry listing inputs when audio is ready.',
       );
     }
-  }, []);
+  }, [web]);
   useEffect(() => {
-    if (snapshot.status !== 'ready') return;
+    if (!web || snapshot.status !== 'ready') return;
     const refresh = () => {
       void refreshInputDevices();
     };
@@ -208,7 +266,7 @@ export function App({ client }: { client: AudioClient }) {
     navigator.mediaDevices?.addEventListener('devicechange', refresh);
     return () =>
       navigator.mediaDevices?.removeEventListener('devicechange', refresh);
-  }, [snapshot.status, refreshInputDevices]);
+  }, [web, snapshot.status, refreshInputDevices]);
   const restored = useRef(false);
   const skipPersistence = useRef(false);
   useEffect(() => {
@@ -221,14 +279,15 @@ export function App({ client }: { client: AudioClient }) {
     if (!settings) return;
     restored.current = true;
     skipPersistence.current = true;
-    client.setMasterGain(settings.masterGain);
+    audio.submit({ type: 'set-master-gain', gain: settings.masterGain });
     settings.tracks.forEach((track, index) => {
       const trackId = index as TrackId;
-      client.setTrackGain(trackId, track.gain);
-      client.setTrackMute(trackId, track.muted);
-      if (track.mode === 'OneShot') client.setMode(trackId, track.mode);
+      audio.submit({ type: 'set-track-gain', trackId, gain: track.gain });
+      audio.submit({ type: 'set-track-mute', trackId, muted: track.muted });
+      if (track.mode === 'OneShot')
+        audio.submit({ type: 'set-mode', trackId, mode: track.mode });
     });
-  }, [client, snapshot.status, storedSettings]);
+  }, [audio, sendCommand, snapshot.status, storedSettings]);
   const persistPreferences = useCallback(
     (confirmation = confirmClearing, inputId = preferredInputId) => {
       const current = ['ready', 'interrupted', 'recovering'].includes(
@@ -275,13 +334,14 @@ export function App({ client }: { client: AudioClient }) {
     return () => window.removeEventListener('beforeunload', warnIfRecording);
   }, [snapshot.tracks]);
   useEffect(() => {
-    const disableRecovery = client.enableRecovery();
+    if (!web) return;
+    const disableRecovery = web.enableRecovery();
     const release = () => {
       disableRecovery();
-      void client.stop();
+      void audio.stop();
     };
     const resume = () => {
-      client.enableRecovery();
+      web.enableRecovery();
     };
     window.addEventListener('pagehide', release);
     window.addEventListener('pageshow', resume);
@@ -290,7 +350,7 @@ export function App({ client }: { client: AudioClient }) {
       window.removeEventListener('pageshow', resume);
       release();
     };
-  }, [client]);
+  }, [audio, web]);
   const recoveryRemovalWarning = recoveryDeletionNotice(recovery);
   const remove = async (target: Removal) => {
     setRemoving(true);
@@ -298,18 +358,22 @@ export function App({ client }: { client: AudioClient }) {
     setFailedRemoval(target);
     let sent = false;
     try {
-      const removed =
+      const submission = sendCommand(
         target.kind === 'track'
-          ? await client.clear(target.trackId)
-          : await client.reset();
-      sent = removed?.status === 'sent';
-      if (removed?.status === 'failed')
-        setRemovalError(
-          `${removed.error} Recordings remain unchanged. Retry ${target.kind === 'session' ? 'Reset session and confirm again' : `CLEAR on Track ${target.trackId + 1}`}.`,
+          ? { type: 'clear', trackId: target.trackId }
+          : { type: 'reset' },
+      );
+      if (submission.status === 'rejected')
+        throw new Error(
+          submission.reason === 'overloaded'
+            ? 'Audio command capacity is full.'
+            : 'Audio is unavailable.',
         );
-      if (removed?.status === 'stale')
+      const outcome = await submission.outcome;
+      sent = outcome.status === 'applied';
+      if (!sent)
         setRemovalError(
-          'Audio session changed before removal. Check current audio state before trying again.',
+          `${outcome.status === 'failed' ? (outcome.error ?? 'The engine could not apply the command.') : 'Audio session changed before removal.'} Recordings remain unchanged. Retry ${target.kind === 'session' ? 'Reset session and confirm again' : `CLEAR on Track ${target.trackId + 1}`}.`,
         );
     } catch (failure) {
       setRemovalError(
@@ -413,6 +477,7 @@ export function App({ client }: { client: AudioClient }) {
                 {recovery.error}
               </p>
               {snapshot.error && <p role="alert">{snapshot.error}</p>}
+              {commandError && <p role="alert">{commandError}</p>}
               <p className="session-guidance">
                 Use wired headphones. Monitoring starts off. Input FX:{' '}
                 {fxStateLabel(snapshot.fx?.[0])}
@@ -431,7 +496,9 @@ export function App({ client }: { client: AudioClient }) {
                     snapshot.status === 'interrupted'
                   }
                   onClick={() => {
-                    void client.start(preferredInputId || undefined);
+                    void audio.start(
+                      web ? preferredInputId || undefined : undefined,
+                    );
                   }}
                 >
                   Start audio
@@ -441,7 +508,8 @@ export function App({ client }: { client: AudioClient }) {
                     !ready && !starting && snapshot.status !== 'interrupted'
                   }
                   onClick={() => {
-                    void client.discardSession();
+                    if (web) void web.discardSession();
+                    else void audio.stop();
                   }}
                 >
                   {snapshot.status === 'recovering'
@@ -455,7 +523,7 @@ export function App({ client }: { client: AudioClient }) {
                   <button
                     disabled={snapshot.status !== 'interrupted'}
                     onClick={() => {
-                      void client.reinitialize();
+                      void audio.reinitialize();
                     }}
                   >
                     Reinitialize audio
@@ -464,18 +532,25 @@ export function App({ client }: { client: AudioClient }) {
                 <button
                   disabled={!ready || switchPending}
                   aria-pressed={snapshot.monitoring}
-                  onClick={() => client.setMonitoring(!snapshot.monitoring)}
+                  onClick={() =>
+                    sendCommand({
+                      type: 'monitoring',
+                      enabled: !snapshot.monitoring,
+                    })
+                  }
                 >
                   {snapshot.monitoring
                     ? 'Disable monitoring'
                     : 'Enable monitoring'}
                 </button>
-                <FxScopeLauncher
-                  scope={0}
-                  slot={snapshot.fx?.[0]}
-                  selected={fxEditorOpen && fxEditorScope === 0}
-                  onOpen={openFxEditor}
-                />
+                {web && (
+                  <FxScopeLauncher
+                    scope={0}
+                    slot={snapshot.fx?.[0]}
+                    selected={fxEditorOpen && fxEditorScope === 0}
+                    onOpen={openFxEditor}
+                  />
+                )}
               </div>
               <p>{snapshot.monitoring ? 'Monitoring on' : 'Monitoring off'}</p>
             </div>
@@ -518,17 +593,22 @@ export function App({ client }: { client: AudioClient }) {
                     value={snapshot.masterGain}
                     disabled={!ready || switchPending}
                     onChange={(event) =>
-                      client.setMasterGain(Number(event.currentTarget.value))
+                      sendCommand({
+                        type: 'set-master-gain',
+                        gain: Number(event.currentTarget.value),
+                      })
                     }
                   />
                   <span>{Math.round(snapshot.masterGain * 100)}%</span>
                 </label>
-                <FxScopeLauncher
-                  scope={3}
-                  slot={snapshot.fx?.[3]}
-                  selected={fxEditorOpen && fxEditorScope === 3}
-                  onOpen={openFxEditor}
-                />
+                {web && (
+                  <FxScopeLauncher
+                    scope={3}
+                    slot={snapshot.fx?.[3]}
+                    selected={fxEditorOpen && fxEditorScope === 3}
+                    onOpen={openFxEditor}
+                  />
+                )}
               </div>
             </div>
             <section aria-labelledby="transport-heading">
@@ -542,17 +622,18 @@ export function App({ client }: { client: AudioClient }) {
                 }
                 onClick={() => {
                   if (!ready || switchPending) return;
-                  if (tracksActive) client.stopTransport();
-                  else if (tracksPlayable) client.startTracks();
+                  if (tracksActive) sendCommand({ type: 'stop-transport' });
+                  else if (tracksPlayable)
+                    sendCommand({ type: 'start-tracks' });
                 }}
               >
                 {tracksActive ? 'Global STOP' : 'Global Start'}
               </button>
             </section>
           </div>
-          {fxEditorOpen && (
+          {fxEditorOpen && web && (
             <FxEditor
-              client={client}
+              client={web!}
               snapshot={snapshot}
               enabled={ready && !switchPending}
               scope={fxEditorScope}
@@ -570,7 +651,8 @@ export function App({ client }: { client: AudioClient }) {
                 sampleRate={snapshot.sampleRate}
                 cycleLengthSamples={snapshot.transport.cycleLengthSamples}
                 enabled={ready && !switchPending}
-                client={client}
+                showFx={Boolean(web)}
+                submit={sendCommand}
                 fx={snapshot.fx?.[index + 1]}
                 fxEditorScope={fxEditorOpen ? fxEditorScope : null}
                 onOpenFx={openFxEditor}
@@ -652,42 +734,48 @@ export function App({ client }: { client: AudioClient }) {
             <>
               {' '}
               {zipReason && <p>{zipReason}</p>}
-              <SessionExport
-                client={client}
-                onBusy={setSessionBusy}
-                onStatus={setTransferStatus}
-                enabled={
-                  ready &&
-                  !sessionBusy &&
-                  !switchPending &&
-                  !snapshot.tracks.some(
-                    (track) => track.state === 'Overdubbing',
-                  )
-                }
-              />
-              <SessionImport
-                disabledReason={
-                  !zipReason && recording
-                    ? 'Finish or stop recording before loading a session.'
-                    : undefined
-                }
-                client={client}
-                onBusy={setSessionBusy}
-                onStatus={setTransferStatus}
-                onConfirmation={() => {
-                  setSettingsGroup('Session');
-                  setSettingsOpen(true);
-                }}
-                onRestoreFocus={focusSettingsGroup}
-                enabled={
-                  ready &&
-                  !sessionBusy &&
-                  !switchPending &&
-                  !snapshot.tracks.some((t) =>
-                    ['Recording', 'Overdubbing'].includes(t.state),
-                  )
-                }
-              />
+              {web ? (
+                <>
+                  <SessionExport
+                    client={web}
+                    onBusy={setSessionBusy}
+                    onStatus={setTransferStatus}
+                    enabled={
+                      ready &&
+                      !sessionBusy &&
+                      !switchPending &&
+                      !snapshot.tracks.some(
+                        (track) => track.state === 'Overdubbing',
+                      )
+                    }
+                  />
+                  <SessionImport
+                    disabledReason={
+                      !zipReason && recording
+                        ? 'Finish or stop recording before loading a session.'
+                        : undefined
+                    }
+                    client={web}
+                    onBusy={setSessionBusy}
+                    onStatus={setTransferStatus}
+                    onConfirmation={() => {
+                      setSettingsGroup('Session');
+                      setSettingsOpen(true);
+                    }}
+                    onRestoreFocus={focusSettingsGroup}
+                    enabled={
+                      ready &&
+                      !sessionBusy &&
+                      !switchPending &&
+                      !snapshot.tracks.some((t) =>
+                        ['Recording', 'Overdubbing'].includes(t.state),
+                      )
+                    }
+                  />
+                </>
+              ) : (
+                <p>Session file transfer is unavailable in this host.</p>
+              )}
               <section
                 className="destructive-controls"
                 aria-labelledby="reset-heading"
@@ -723,132 +811,139 @@ export function App({ client }: { client: AudioClient }) {
           ),
           Audio: (
             <>
-              {' '}
-              {
-                <label>
-                  Input device
-                  <select
-                    aria-label="Input device"
-                    value={snapshot.inputDeviceId ?? ''}
-                    disabled={
-                      !ready ||
-                      inputDevices.length === 0 ||
-                      switchPending ||
-                      snapshot.transport.running ||
-                      snapshot.tracks.some((track) =>
-                        ['Recording', 'Playing', 'Overdubbing'].includes(
-                          track.state,
-                        ),
-                      )
-                    }
-                    onChange={(event) => {
-                      const deviceId = event.currentTarget.value;
-                      setSwitchPending(true);
-                      void client.switchInput(deviceId).then((switched) => {
-                        if (switched) {
-                          setPreferredInputId(deviceId);
-                          persistPreferences(confirmClearing, deviceId);
-                          void refreshInputDevices();
+              {!web ? (
+                <p>Device selection is managed by this audio host.</p>
+              ) : (
+                <>
+                  {' '}
+                  {
+                    <label>
+                      Input device
+                      <select
+                        aria-label="Input device"
+                        value={snapshot.inputDeviceId ?? ''}
+                        disabled={
+                          !ready ||
+                          inputDevices.length === 0 ||
+                          switchPending ||
+                          snapshot.transport.running ||
+                          snapshot.tracks.some((track) =>
+                            ['Recording', 'Playing', 'Overdubbing'].includes(
+                              track.state,
+                            ),
+                          )
                         }
-                        setSwitchPending(false);
-                      });
-                    }}
-                  >
-                    <option value="">System default</option>
-                    {snapshot.inputDeviceId &&
-                      !inputDevices.some(
+                        onChange={(event) => {
+                          const deviceId = event.currentTarget.value;
+                          setSwitchPending(true);
+                          void web.switchInput(deviceId).then((switched) => {
+                            if (switched) {
+                              setPreferredInputId(deviceId);
+                              persistPreferences(confirmClearing, deviceId);
+                              void refreshInputDevices();
+                            }
+                            setSwitchPending(false);
+                          });
+                        }}
+                      >
+                        <option value="">System default</option>
+                        {snapshot.inputDeviceId &&
+                          !inputDevices.some(
+                            (device) => device.id === snapshot.inputDeviceId,
+                          ) && (
+                            <option value={snapshot.inputDeviceId}>
+                              System-selected input (current)
+                            </option>
+                          )}
+                        {inputDevices.map((device) => (
+                          <option key={device.id} value={device.id}>
+                            {device.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  }
+                  {ready && (
+                    <p>
+                      Stop playback and capture before changing inputs.
+                      Completed recordings are retained and the shared transport
+                      is reset.
+                    </p>
+                  )}
+                  {!ready && (
+                    <p>
+                      Start audio to choose an input. Saved preferences are
+                      restored when audio starts.
+                    </p>
+                  )}
+                  {switchPending && (
+                    <p role="status">
+                      Changing input. Track controls are unavailable until
+                      switching finishes.
+                    </p>
+                  )}
+                  {ready && inputDevices.length === 0 && (
+                    <p>
+                      No available input devices were listed. Your acknowledged
+                      audio input remains in use. Restart audio to check
+                      available inputs.
+                    </p>
+                  )}
+                  {inputListError && (
+                    <>
+                      <p role="alert">{inputListError}</p>
+                      <button
+                        disabled={!ready}
+                        onClick={() => void refreshInputDevices()}
+                      >
+                        Retry listing inputs
+                      </button>
+                    </>
+                  )}
+                  {snapshot.error && (
+                    <p>
+                      {snapshot.error}{' '}
+                      {ready
+                        ? 'The acknowledged input is shown; retry selection when playback and capture are stopped.'
+                        : snapshot.status === 'interrupted'
+                          ? 'Use Reinitialize audio to retry with retained recordings.'
+                          : snapshot.status === 'recovering'
+                            ? 'Reinitializing audio; wait for the result.'
+                            : 'Use Start audio to retry after resolving this failure.'}
+                    </p>
+                  )}
+                  {preferenceSave === 'failed' && (
+                    <>
+                      <p role="status">
+                        Input preference applies for this visit; could not save
+                        in this browser.
+                      </p>
+                      <button onClick={() => persistPreferences()}>
+                        Retry saving preferences
+                      </button>
+                    </>
+                  )}
+                  {preferenceSave === 'saved' && (
+                    <p>Input preference saved in this browser.</p>
+                  )}
+                  {ready && (
+                    <p>
+                      Current input:{' '}
+                      {inputDevices.find(
                         (device) => device.id === snapshot.inputDeviceId,
-                      ) && (
-                        <option value={snapshot.inputDeviceId}>
-                          System-selected input (current)
-                        </option>
-                      )}
-                    {inputDevices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              }
-              {ready && (
-                <p>
-                  Stop playback and capture before changing inputs. Completed
-                  recordings are retained and the shared transport is reset.
-                </p>
-              )}
-              {!ready && (
-                <p>
-                  Start audio to choose an input. Saved preferences are restored
-                  when audio starts.
-                </p>
-              )}
-              {switchPending && (
-                <p role="status">
-                  Changing input. Track controls are unavailable until switching
-                  finishes.
-                </p>
-              )}
-              {ready && inputDevices.length === 0 && (
-                <p>
-                  No available input devices were listed. Your acknowledged
-                  audio input remains in use. Restart audio to check available
-                  inputs.
-                </p>
-              )}
-              {inputListError && (
-                <>
-                  <p role="alert">{inputListError}</p>
-                  <button
-                    disabled={!ready}
-                    onClick={() => void refreshInputDevices()}
-                  >
-                    Retry listing inputs
-                  </button>
+                      )?.label ?? 'System-selected input'}
+                    </p>
+                  )}
+                  {ready &&
+                    preferredInputId &&
+                    snapshot.inputDeviceId !== preferredInputId && (
+                      <p role="status">
+                        Preferred input is unavailable; using the
+                        system-selected input.
+                      </p>
+                    )}
                 </>
               )}
-              {snapshot.error && (
-                <p>
-                  {snapshot.error}{' '}
-                  {ready
-                    ? 'The acknowledged input is shown; retry selection when playback and capture are stopped.'
-                    : snapshot.status === 'interrupted'
-                      ? 'Use Reinitialize audio to retry with retained recordings.'
-                      : snapshot.status === 'recovering'
-                        ? 'Reinitializing audio; wait for the result.'
-                        : 'Use Start audio to retry after resolving this failure.'}
-                </p>
-              )}
-              {preferenceSave === 'failed' && (
-                <>
-                  <p role="status">
-                    Input preference applies for this visit; could not save in
-                    this browser.
-                  </p>
-                  <button onClick={() => persistPreferences()}>
-                    Retry saving preferences
-                  </button>
-                </>
-              )}
-              {preferenceSave === 'saved' && (
-                <p>Input preference saved in this browser.</p>
-              )}
-              {ready && (
-                <p>
-                  Current input:{' '}
-                  {inputDevices.find(
-                    (device) => device.id === snapshot.inputDeviceId,
-                  )?.label ?? 'System-selected input'}
-                </p>
-              )}
-              {ready &&
-                preferredInputId &&
-                snapshot.inputDeviceId !== preferredInputId && (
-                  <p role="status">
-                    Preferred input is unavailable; using the system-selected
-                    input.
-                  </p>
-                )}
             </>
           ),
           Preferences: (

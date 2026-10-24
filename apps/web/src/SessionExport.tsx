@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AudioClient } from '@loopbeats/audio-client';
+import type { WebAudioExtensions } from './web-audio-extensions';
 
 export function SessionExport({
   client,
@@ -8,7 +8,7 @@ export function SessionExport({
   onBusy,
   onStatus,
 }: {
-  client: AudioClient;
+  client: WebAudioExtensions;
   enabled: boolean;
   disabledReason?: string;
   onBusy?: (busy: boolean) => void;

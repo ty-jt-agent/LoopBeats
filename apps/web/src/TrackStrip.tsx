@@ -4,7 +4,7 @@ import type {
   TrackId,
   TrackSnapshot,
 } from '@loopbeats/domain';
-import type { AudioClient } from '@loopbeats/audio-client';
+import type { AudioApplicationCommand } from '@loopbeats/domain';
 import { fxStateLabel } from './fx-state';
 import { FxScopeLauncher } from './FxEditor';
 
@@ -14,7 +14,8 @@ type Props = {
   sampleRate: number | null;
   cycleLengthSamples: number;
   enabled: boolean;
-  client: AudioClient;
+  showFx: boolean;
+  submit: (command: AudioApplicationCommand) => void;
   fx?: FxSnapshot;
   fxEditorScope: FxScope | null;
   onOpenFx: (scope: FxScope, trigger: HTMLButtonElement) => void;
@@ -52,7 +53,8 @@ export function TrackStrip({
   sampleRate,
   cycleLengthSamples,
   enabled,
-  client,
+  showFx,
+  submit,
   fx,
   fxEditorScope,
   onOpenFx,
@@ -93,10 +95,12 @@ export function TrackStrip({
           value={track.mode}
           disabled={!enabled || !track.canSetMode}
           onChange={(event) =>
-            client.setMode(
+            submit({
+              type: 'set-mode',
               trackId,
-              event.currentTarget.value === 'OneShot' ? 'OneShot' : 'Loop',
-            )
+              mode:
+                event.currentTarget.value === 'OneShot' ? 'OneShot' : 'Loop',
+            })
           }
         >
           <option value="Loop" disabled={!track.canSetLoop}>
@@ -123,7 +127,11 @@ export function TrackStrip({
             value={track.gain}
             disabled={!enabled}
             onChange={(event) =>
-              client.setTrackGain(trackId, Number(event.currentTarget.value))
+              submit({
+                type: 'set-track-gain',
+                trackId,
+                gain: Number(event.currentTarget.value),
+              })
             }
           />
           <span>{Math.round(track.gain * 100)}%</span>
@@ -148,7 +156,7 @@ export function TrackStrip({
             disabled={!enabled || !action?.available}
             onClick={() => {
               if (!enabled || !action?.available) return;
-              client[action.command](trackId);
+              submit({ type: action.command, trackId });
             }}
           >
             <span>REC/PLAY</span>
@@ -157,14 +165,16 @@ export function TrackStrip({
           <div className="track-buttons">
             <button
               disabled={!enabled || !track.canStop}
-              onClick={() => client.stopTrack(trackId)}
+              onClick={() => submit({ type: 'stop-track', trackId })}
             >
               Track STOP
             </button>
             <button
               disabled={!enabled}
               aria-pressed={track.muted}
-              onClick={() => client.setTrackMute(trackId, !track.muted)}
+              onClick={() =>
+                submit({ type: 'set-track-mute', trackId, muted: !track.muted })
+              }
             >
               {track.muted ? 'Unmute' : 'Mute'}
             </button>
@@ -190,12 +200,14 @@ export function TrackStrip({
       {clearError && <p role="alert">{clearError}</p>}
       <details className="track-details">
         <summary>Track {number} details</summary>
-        <FxScopeLauncher
-          scope={(trackId + 1) as FxScope}
-          slot={fx}
-          selected={fxEditorScope === trackId + 1}
-          onOpen={onOpenFx}
-        />
+        {showFx && (
+          <FxScopeLauncher
+            scope={(trackId + 1) as FxScope}
+            slot={fx}
+            selected={fxEditorScope === trackId + 1}
+            onOpen={onOpenFx}
+          />
+        )}
         <details>
           <summary>Track {number} diagnostics</summary>
           <p>

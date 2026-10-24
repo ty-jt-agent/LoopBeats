@@ -31,26 +31,61 @@ class LoopProcessor extends AudioWorkletProcessor {
     this.frames = 0;
     this.blockSequence = 0;
     this.generation = options.processorOptions.generation;
-    this.commands = [];
+    this.commands = new Array(64);
+    this.commandHead = 0;
+    this.commandCount = 0;
+    this.outcomes = Array.from({ length: 64 }, () => ({
+      type: 'application-command-outcome',
+      commandId: 0,
+      generation: 0,
+      status: 'applied',
+      applicationFrame: 0,
+      blockSequence: 0,
+    }));
+    this.outcomeHead = 0;
+    this.outcomeCount = 0;
     this.inputLevel = 0;
     this.outputLevel = 0;
     this.failed = false;
     this.exportSession = null;
     this.importSession = null;
     this.port.onmessage = ({ data }) => {
-      if (data.type === 'set-generation') {
+      if (data.type === 'flush-command-outcomes') {
+        this.flushOutcomes();
+        this.port.postMessage({
+          type: 'command-outcomes-flushed',
+          requestId: data.requestId,
+        });
+        return;
+      }
+      if (data.type === 'advance-generation') {
+        this.flushOutcomes();
+        for (let index = 0; index < this.commandCount; index++) {
+          const queueIndex = (this.commandHead + index) % this.commands.length;
+          const item = this.commands[queueIndex];
+          if (item) this.postOutcome(item.commandId, item.generation, 'stale');
+          this.commands[queueIndex] = undefined;
+        }
+        this.commandHead = 0;
+        this.commandCount = 0;
         this.generation = data.generation;
+        this.port.postMessage({
+          type: 'generation-advanced',
+          generation: data.generation,
+          requestId: data.requestId,
+        });
         return;
       }
       if (data.type === 'application-command') {
         const { commandId, generation, command } = data;
         if (generation !== this.generation) {
-          this.port.postMessage({ commandId, generation, status: 'stale' });
+          this.postOutcome(commandId, generation, 'stale');
           return;
         }
         // AudioClient bounds outstanding commands to this same capacity.
-        if (this.commands.length >= 64) {
+        if (this.commandCount >= this.commands.length) {
           this.port.postMessage({
+            type: 'application-command-outcome',
             commandId,
             generation,
             status: 'failed',
@@ -58,7 +93,10 @@ class LoopProcessor extends AudioWorkletProcessor {
           });
           return;
         }
-        this.commands.push({ commandId, generation, command });
+        const queueIndex =
+          (this.commandHead + this.commandCount) % this.commands.length;
+        this.commands[queueIndex] = { commandId, generation, command };
+        this.commandCount++;
         return;
       }
       if (data.type === 'set-playback-fx') {
@@ -530,7 +568,9 @@ class LoopProcessor extends AudioWorkletProcessor {
       case 'set-track-gain':
         if (
           (command.trackId !== 0 && command.trackId !== 1) ||
-          !Number.isFinite(command.gain)
+          !Number.isFinite(command.gain) ||
+          command.gain < 0 ||
+          command.gain > 1
         )
           return false;
         this.engine.set_track_gain(command.trackId, command.gain);
@@ -544,7 +584,12 @@ class LoopProcessor extends AudioWorkletProcessor {
         this.engine.set_track_mute(command.trackId, command.muted ? 1 : 0);
         break;
       case 'set-master-gain':
-        if (!Number.isFinite(command.gain)) return false;
+        if (
+          !Number.isFinite(command.gain) ||
+          command.gain < 0 ||
+          command.gain > 1
+        )
+          return false;
         this.engine.set_master_gain(command.gain);
         break;
       case 'monitoring':
@@ -580,21 +625,21 @@ class LoopProcessor extends AudioWorkletProcessor {
         this.engine.stop_transport();
         break;
       case 'start-tracks': {
-        const active = (id) => {
-          const state = this.engine.track_state(id);
-          return (
-            state === TRACK_STATE.Recording ||
-            state === TRACK_STATE.Playing ||
-            state === TRACK_STATE.Overdubbing
-          );
-        };
-        if (!active(0) && !active(1)) {
-          for (let id = 0; id < 2; id++)
-            if (
-              this.engine.track_state(id) === TRACK_STATE.Stopped &&
-              this.engine.can_play(id)
-            )
-              this.engine.play(id);
+        const state0 = this.engine.track_state(0);
+        const state1 = this.engine.track_state(1);
+        const active0 =
+          state0 === TRACK_STATE.Recording ||
+          state0 === TRACK_STATE.Playing ||
+          state0 === TRACK_STATE.Overdubbing;
+        const active1 =
+          state1 === TRACK_STATE.Recording ||
+          state1 === TRACK_STATE.Playing ||
+          state1 === TRACK_STATE.Overdubbing;
+        if (!active0 && !active1) {
+          if (state0 === TRACK_STATE.Stopped && this.engine.can_play(0))
+            this.engine.play(0);
+          if (state1 === TRACK_STATE.Stopped && this.engine.can_play(1))
+            this.engine.play(1);
         }
         break;
       }
@@ -608,6 +653,43 @@ class LoopProcessor extends AudioWorkletProcessor {
         return false;
     }
     return true;
+  }
+  storeOutcome(commandId, generation, status, applicationFrame, blockSequence) {
+    if (this.outcomeCount >= this.outcomes.length) {
+      this.failed = true;
+      return;
+    }
+    const slot =
+      this.outcomes[
+        (this.outcomeHead + this.outcomeCount) % this.outcomes.length
+      ];
+    slot.commandId = commandId;
+    slot.generation = generation;
+    slot.status = status;
+    slot.applicationFrame = applicationFrame;
+    slot.blockSequence = blockSequence;
+    this.outcomeCount++;
+  }
+  postOutcome(commandId, generation, status, applicationFrame, blockSequence) {
+    const outcome = {
+      type: 'application-command-outcome',
+      commandId,
+      generation,
+      status,
+    };
+    if (status === 'applied') {
+      outcome.applicationFrame = applicationFrame;
+      outcome.blockSequence = blockSequence;
+    }
+    this.port.postMessage(outcome);
+  }
+  flushOutcomes() {
+    while (this.outcomeCount > 0) {
+      const outcome = this.outcomes[this.outcomeHead];
+      this.port.postMessage(outcome);
+      this.outcomeHead = (this.outcomeHead + 1) % this.outcomes.length;
+      this.outcomeCount--;
+    }
   }
   publishSnapshot() {
     this.port.postMessage({
@@ -664,25 +746,23 @@ class LoopProcessor extends AudioWorkletProcessor {
     }
     const source = inputs[0][0];
     this.blockSequence++;
-    const commandCount = Math.min(32, this.commands.length);
+    const commandCount = Math.min(32, this.commandCount);
     for (let index = 0; index < commandCount; index++) {
-      const item = this.commands.shift();
+      const item = this.commands[this.commandHead];
+      this.commands[this.commandHead] = undefined;
+      this.commandHead = (this.commandHead + 1) % this.commands.length;
+      this.commandCount--;
       if (item.generation !== this.generation) {
-        this.port.postMessage({
-          commandId: item.commandId,
-          generation: item.generation,
-          status: 'stale',
-        });
+        this.storeOutcome(item.commandId, item.generation, 'stale');
       } else {
         const applied = this.applyApplicationCommand(item.command);
-        this.port.postMessage({
-          commandId: item.commandId,
-          generation: item.generation,
-          status: applied ? 'applied' : 'failed',
-          applicationFrame: this.frames,
-          blockSequence: this.blockSequence,
-          error: applied ? undefined : 'The audio engine rejected the command.',
-        });
+        this.storeOutcome(
+          item.commandId,
+          item.generation,
+          applied ? 'applied' : 'failed',
+          this.frames,
+          this.blockSequence,
+        );
       }
     }
     for (let i = 0; i < count; i++) this.input[i] = source?.[i] ?? 0;
