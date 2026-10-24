@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@loopbeats/domain": "*"
+    "@loopbeats/domain": "*",
+    "@loopbeats/session-format": "*"
   }
 }

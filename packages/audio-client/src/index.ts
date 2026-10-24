@@ -1,4 +1,4 @@
-export type { FxCutoffAdjustment } from './session-fx';
+export type { FxCutoffAdjustment } from '@loopbeats/session-format';
 import type {
   FxConfig,
   SessionFxSnapshot,
@@ -835,7 +835,7 @@ export class AudioClient {
         sourceRate: number,
         targetRate: number,
         signal: AbortSignal,
-        fxAdjustments: readonly import('./session-fx').FxCutoffAdjustment[],
+        fxAdjustments: readonly import('@loopbeats/session-format').FxCutoffAdjustment[],
       ) => Promise<boolean>;
     },
   ): Promise<boolean> {
