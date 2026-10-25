@@ -1,0 +1,20 @@
+[package]
+name = "windows-audio-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+crossbeam-queue = "0.3"
+native-audio-host = { path = "../native-audio-host" }
+loop-engine = { path = "../loop-engine" }
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.26"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[[example]]
+name = "monitor"
+path = "examples/monitor.rs"
+

@@ -45,6 +45,10 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - name: Check and test native WASAPI host
+        run: |
+          cargo check --locked --all-targets -p windows-audio-host --target x86_64-pc-windows-msvc
+          cargo test --locked -p windows-audio-host
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
