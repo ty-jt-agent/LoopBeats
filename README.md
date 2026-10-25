@@ -41,9 +41,17 @@ The application starts a microphone/audio-interface session through AudioClient,
 ### Windows (PowerShell)
 
 1. Install Node 24 using the Windows installer. If you already use a Node version manager, select Node 24 through that manager instead.
-2. Download and run `rustup-init.exe` from the Rust installation page. Accept the default MSVC toolchain. Install the Visual Studio C++ build tools if prompted; select **Desktop development with C++** with its MSVC tools and Windows SDK. See [Microsoft's Windows Rust setup guide](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup).
-3. Close and reopen PowerShell after installation. If using an integrated terminal, restart VS Code as well so it receives the updated PATH.
-4. Verify the tools before starting the application:
+2. Install the MSVC linker and Windows SDK. Download and run [Visual Studio Build Tools](https://learn.microsoft.com/en-us/cpp/overview/acquire-msvc?view=msvc-170). In Visual Studio Installer, select the **Desktop development with C++** workload. In Installation details, make sure **MSVC Build Tools for x64/x86** and a **Windows 10 or Windows 11 SDK** are selected. The workload installs `link.exe`, which Rust needs to build Windows targets. See [Microsoft's Windows Rust setup guide](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup).
+3. Download and run `rustup-init.exe` from the Rust installation page. Accept the default MSVC toolchain.
+4. Open **Developer PowerShell for Visual Studio** from the Start menu. Run Cargo from this shell so it can find `link.exe` and the Windows SDK tools. Check the linker with:
+
+```powershell
+where.exe link.exe
+```
+
+The command should print a path. If it reports that no file was found, open Visual Studio Installer, choose **Modify**, and add the MSVC x64/x86 tools and Windows SDK under **Desktop development with C++**. Then open Developer PowerShell again. If you use VS Code, launch it from Developer PowerShell with `code .` so its integrated terminal inherits the toolchain environment.
+
+5. Verify the tools before starting the application:
 
 ```powershell
 node --version       # Expected: v24.x
@@ -61,6 +69,8 @@ cd LoopBeats
 ```
 
 In an existing clone, open PowerShell in its root directory. Run `rustup show` there: `rust-toolchain.toml` selects Rust 1.98.1, rustfmt, clippy and the `wasm32-unknown-unknown` target. Rustup downloads the selected toolchain/target on first use; allow that download to finish.
+
+Run Windows Rust commands, including the [standalone native WASAPI monitor](crates/windows-audio-host/README.md), from Developer PowerShell so Cargo can access the MSVC linker. Node/npm are not needed for that native monitor.
 
 ### macOS / Linux
 
