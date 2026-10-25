@@ -1,8 +1,33 @@
+// @vitest-environment node
 import { afterEach, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { AudioClient } from './index';
-import type { FxConfig } from '@loopbeats/domain';
+import type { AudioApplicationCommand, FxConfig } from '@loopbeats/domain';
 
 type PortMessage = { data: Record<string, unknown> };
+const MOCK_COMMAND_BUDGET = 32;
+
+const sharedCommandCases = readFileSync(
+  new URL(
+    '../../domain/test-fixtures/audio-command-conformance.csv',
+    import.meta.url,
+  ),
+  'utf8',
+)
+  .split(/\r?\n/)
+  .filter((line) => line.length > 0 && !line.startsWith('#'))
+  .map((line) => line.split(';'));
+
+function commandFromSharedCase(fields: string[]): AudioApplicationCommand {
+  switch (fields[2]) {
+    case 'set-master-gain':
+      return { type: 'set-master-gain', gain: Number(fields[3]) };
+    case 'monitoring':
+      return { type: 'monitoring', enabled: fields[3] === 'true' };
+    default:
+      throw new Error(`Unsupported shared command case: ${fields[2]}`);
+  }
+}
 
 function emptyTrack() {
   return {
@@ -134,7 +159,7 @@ async function createClientHarness() {
   await started;
   const runRenderBlock = () => {
     frames += 4;
-    for (const command of pendingCommands.splice(0, 32)) {
+    for (const command of pendingCommands.splice(0, MOCK_COMMAND_BUDGET)) {
       pendingOutcomes.push({
         type: 'application-command-outcome',
         commandId: command.commandId,
@@ -172,6 +197,38 @@ async function createClientHarness() {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.resetModules();
+});
+
+test('shared scheduling cases pass through the public audio application contract', async () => {
+  const harness = await createClientHarness();
+  try {
+    const rows = sharedCommandCases.filter((fields) => fields[0] === 'fifo');
+    const frameBase =
+      harness.client.getApplicationSnapshot().engine.processedFrames;
+    const blockBase = frameBase / 4;
+    const submissions = rows.map((row) => {
+      const submission = harness.client.submit(commandFromSharedCase(row));
+      expect(submission.status).toBe('accepted');
+      if (submission.status !== 'accepted') throw new Error('Case rejected.');
+      return submission;
+    });
+
+    harness.runRenderBlock();
+    harness.setHoldAcknowledgements(false);
+    const outcomes = await Promise.all(
+      submissions.map(({ outcome }) => outcome),
+    );
+    for (const [index, outcome] of outcomes.entries()) {
+      const row = rows[index];
+      expect(outcome).toMatchObject({
+        status: 'applied',
+        applicationFrame: frameBase + Number(row[4]),
+        blockSequence: blockBase + Number(row[5]),
+      });
+    }
+  } finally {
+    await harness.dispose();
+  }
 });
 
 async function createProcessor() {
@@ -396,22 +453,35 @@ test('reports capabilities and rejects before the acknowledgement window is full
 test('stalled public acknowledgement delivery bounds admission while rendering continues', async () => {
   const harness = await createClientHarness();
   try {
+    const backpressureCase = sharedCommandCases.find(
+      (fields) => fields[0] === 'backpressure',
+    )!;
+    const ackCapacity = Number(backpressureCase[1]);
+    const acceptedCount = Number(backpressureCase[2]);
+    const processingBlocks = Number(backpressureCase[3]);
+    const workBudget = Number(backpressureCase[4]);
+    const framesPerBlock = Number(backpressureCase[5]);
+    expect(workBudget).toBe(MOCK_COMMAND_BUDGET);
+    const frameBase =
+      harness.client.getApplicationSnapshot().engine.processedFrames;
+    const blockBase = frameBase / framesPerBlock;
     harness.setHoldAcknowledgements(true);
-    const accepted = Array.from({ length: 64 }, () =>
+    const accepted = Array.from({ length: acceptedCount }, () =>
       harness.client.submit({ type: 'stop-transport' }),
     );
     expect(
       accepted.every((submission) => submission.status === 'accepted'),
     ).toBe(true);
+    expect(acceptedCount).toBe(ackCapacity);
     expect(harness.client.submit({ type: 'stop-transport' })).toEqual({
       status: 'rejected',
       reason: 'overloaded',
     });
 
-    harness.runRenderBlock();
-    harness.runRenderBlock();
+    for (let block = 0; block < processingBlocks; block++)
+      harness.runRenderBlock();
     expect(harness.client.getApplicationSnapshot().engine.processedFrames).toBe(
-      12,
+      frameBase + processingBlocks * 4,
     );
 
     harness.setHoldAcknowledgements(false);
@@ -422,11 +492,20 @@ test('stalled public acknowledgement delivery bounds admission while rendering c
           : Promise.reject(),
       ),
     );
-    expect(outcomes).toHaveLength(64);
-    expect(new Set(outcomes.map((outcome) => outcome.commandId)).size).toBe(64);
+    expect(outcomes).toHaveLength(acceptedCount);
+    expect(new Set(outcomes.map((outcome) => outcome.commandId)).size).toBe(
+      acceptedCount,
+    );
     expect(outcomes.every((outcome) => outcome.status === 'applied')).toBe(
       true,
     );
+    outcomes.forEach((outcome, index) => {
+      const blockOffset = Math.floor(index / workBudget);
+      expect(outcome).toMatchObject({
+        applicationFrame: frameBase + blockOffset * framesPerBlock,
+        blockSequence: blockBase + blockOffset + 1,
+      });
+    });
   } finally {
     await harness.dispose();
   }
