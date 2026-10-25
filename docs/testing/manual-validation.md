@@ -21,6 +21,18 @@ Use desktop Chrome, a working microphone and wired headphones. Open the candidat
 
 At #19, map all 50 parent stories to automated or manual evidence. These combined cases complement that trace; they do not replace story-specific deterministic tests. If required hardware is unavailable, #19 stays unaccepted unless the owner explicitly narrows the target and records the limitation.
 
+## Windows native audio prototype (#97)
+
+The first matched-endpoint native proof is an early hardware checkpoint before broader Windows UI integration. Use the standalone [`windows-audio-host` monitor harness](../../crates/windows-audio-host/README.md) and the measurement method and required evidence fields in [windows-native.md](../architecture/windows-native.md#owner-supplied-hardware-evidence). This is separate from #19's later integrated product acceptance.
+
+| ID | Combined case and expected outcome | Origin / affected features |
+| --- | --- | --- |
+| H01 | On the available Windows x64 PC, run the native monitor on a matched duplex endpoint pair, record exact Windows/device/driver and negotiated settings, and provide repeatable complete mic-to-output measurement evidence or a specific documented measurement limitation. Record fallback and discontinuity status; keep low-period and fallback availability results distinct. | #97; native WASAPI, matched-endpoint monitoring and latency evidence |
+
+| Case ID | Result | Evidence / limitation |
+| --- | --- | --- |
+| H01 | Deferred | No Windows audio device is available in the implementation environment; owner hardware run required. |
+
 ## Existing evidence and deferred work
 
 ### Effects acceptance backlog (#83)
