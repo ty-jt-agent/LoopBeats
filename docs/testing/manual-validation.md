@@ -31,7 +31,7 @@ The first matched-endpoint native proof is an early hardware checkpoint before b
 
 | Case ID | Result | Evidence / limitation |
 | --- | --- | --- |
-| H01 | Deferred | No Windows audio device is available in the implementation environment; owner hardware run required. |
+| H01 | Partial | [Owner-reported run](run-2026-10-26-windows-native-97.md) covers NZXT USB MIC to Realtek output: both at 48 kHz, 480-frame periods, no fallback; one additional discontinuity was counted. Duration, listening outcome, driver versions and complete latency evidence or its limitation are pending. |
 
 ## Existing evidence and deferred work
 
