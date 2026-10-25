@@ -28,6 +28,9 @@
     "spike:probe": "node scripts/browser-audio-probe.cjs",
     "spike:wasm:build": "node scripts/build-wasm-spike.mjs",
     "spike:wasm": "npm run spike:wasm:build && npm run dev -- --open /wasm-audio-spike/index.html",
+    "build:windows": "npm run build --workspace @loopbeats/windows",
+    "tauri:dev": "npm run tauri:dev --workspace @loopbeats/windows",
+    "tauri:build": "npm run tauri:build --workspace @loopbeats/windows",
     "build:audio": "node scripts/build-audio.mjs"
   },
   "devDependencies": {

@@ -98,6 +98,16 @@ The two-track performance panel places master controls above adjacent track stri
 
 Run `npm run check` for scaffold, type, lint, formatting and TypeScript unit checks. See [development instructions](docs/development.md) for browser, Rust/WASM and CI commands. The [testing strategy](docs/testing/strategy.md) keeps automated checks on every PR and batches routine physical-audio checks in milestone #19 for our single manual tester.
 
+## Windows desktop shell
+
+The Windows desktop build reuses the React interface in a Tauri 2 WebView and
+loads all frontend files locally. Build it independently with
+`npm run tauri:build` from a Windows x64 development environment with the
+Microsoft C++ build tools installed. The NSIS installer checks for WebView2
+Runtime and can launch its installer if it is missing. This shell slice exposes
+the platform-neutral host contract and reports that native audio is unavailable
+until the WASAPI host is integrated; it does not send audio through the WebView.
+
 Vendored Matt Pocock skills are MIT licensed, pinned and attributed in `.agents/skills/UPSTREAM.md`. `/to-issues` is local compatibility naming, not an upstream skill.
 
 ## Completed session export (#50)

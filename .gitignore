@@ -9,3 +9,5 @@ test-results/
 !.env.example
 apps/web/public/wasm-audio-spike/gain.wasm
 apps/web/public/audio/
+apps/windows/src-tauri/target/
+apps/windows/src-tauri/gen/schemas/

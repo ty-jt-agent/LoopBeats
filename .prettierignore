@@ -1,6 +1,7 @@
 node_modules
 dist
 target
+apps/windows/src-tauri/gen/schemas
 package-lock.json
 Cargo.lock
 playwright-report

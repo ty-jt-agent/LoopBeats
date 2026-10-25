@@ -246,6 +246,22 @@ export class AudioClient implements AudioApplication {
   };
   getRecoverySnapshot = (): RecoveryState =>
     this.recoverySession?.getSnapshot() ?? this.noRecovery;
+
+  async listInputDevices(): Promise<readonly { id: string; label: string }[]> {
+    const devices = (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
+    return devices
+      .filter((device) => device.kind === 'audioinput')
+      .map((device, index) => ({
+        id: device.deviceId,
+        label: device.label || `Audio input ${index + 1}`,
+      }));
+  }
+
+  subscribeInputDeviceChanges(listener: () => void): () => void {
+    navigator.mediaDevices?.addEventListener('devicechange', listener);
+    return () =>
+      navigator.mediaDevices?.removeEventListener('devicechange', listener);
+  }
   enableRecovery(): () => void {
     this.recoverySession ??= new SessionRecovery({
       snapshot: this.getSnapshot,
