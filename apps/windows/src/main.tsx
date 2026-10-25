@@ -11,3 +11,6 @@ createRoot(document.getElementById('root')!).render(
     <App audio={audioApplication} />
   </StrictMode>,
 );
+
+if (import.meta.env.VITE_WINDOWS_SHELL_SMOKE === 'true')
+  void audioApplication.start();
