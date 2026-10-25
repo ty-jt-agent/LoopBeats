@@ -99,6 +99,131 @@ fn shared_backpressure_case_rejects_before_acceptance_without_stalling_processin
 }
 
 #[test]
+fn start_tracks_respects_the_shared_active_track_guard() {
+    for row in shared_case("start-tracks") {
+        let (mut adapter, mut processor) = Processor::controlled(32, 48_000);
+        match row[1] {
+            "active-one-shot" => {
+                create_stopped_one_shot(&mut adapter, &mut processor, 0);
+                create_stopped_one_shot(&mut adapter, &mut processor, 1);
+                submit_block(&mut adapter, &mut processor, AudioCommand::Play(1), &[], 1);
+            }
+            "active-recording" => {
+                create_stopped_one_shot(&mut adapter, &mut processor, 1);
+                submit_block(
+                    &mut adapter,
+                    &mut processor,
+                    AudioCommand::Record(0),
+                    &[0.25],
+                    1,
+                );
+            }
+            "all-stopped" => {
+                create_stopped_one_shot(&mut adapter, &mut processor, 0);
+                create_stopped_one_shot(&mut adapter, &mut processor, 1);
+            }
+            other => panic!("unsupported shared start-tracks case: {other}"),
+        }
+
+        let before = processor.snapshot();
+        for (track_id, expected_state) in row[2].split(',').enumerate() {
+            assert_eq!(
+                before.tracks[track_id].state as u32,
+                expected_state.parse::<u32>().unwrap(),
+                "fixture precondition for {} track {track_id}",
+                row[1]
+            );
+        }
+        let accepted = adapter
+            .submit(AudioCommand::StartTracks)
+            .expect("start command is admitted");
+        adapter.flush(1);
+        let mut output = [0.0; 1];
+        processor.process_block(&[], &mut output, HostEvent::None);
+        let after = processor.snapshot();
+        let expected_plays = row[3]
+            .split(',')
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse::<usize>().unwrap())
+            .collect::<Vec<_>>();
+
+        for track_id in 0..2 {
+            if expected_plays.contains(&track_id) {
+                assert_eq!(
+                    after.tracks[track_id].state,
+                    loop_engine::TrackState::Playing
+                );
+            } else {
+                assert_eq!(after.tracks[track_id].state, before.tracks[track_id].state);
+            }
+        }
+        if row[1] == "active-one-shot" {
+            assert_eq!(
+                after.tracks[1].position_samples,
+                before.tracks[1].position_samples + 1
+            );
+        }
+        assert_eq!(
+            adapter.take_outcome().unwrap(),
+            CommandOutcome::Applied {
+                command_id: accepted.command_id,
+                generation: accepted.generation,
+                application_frame: processor.rendered_frames() - 1,
+                block_sequence: processor.block_sequence(),
+            }
+        );
+    }
+}
+
+fn create_stopped_one_shot(
+    adapter: &mut native_audio_host::CommandAdapter,
+    processor: &mut Processor,
+    track_id: usize,
+) {
+    submit_block(
+        adapter,
+        processor,
+        AudioCommand::SetMode {
+            track_id,
+            mode: loop_engine::PlaybackMode::OneShot,
+        },
+        &[],
+        1,
+    );
+    submit_block(
+        adapter,
+        processor,
+        AudioCommand::Record(track_id),
+        &[0.25, 0.5, 0.75],
+        3,
+    );
+    submit_block(adapter, processor, AudioCommand::Record(track_id), &[], 1);
+    submit_block(
+        adapter,
+        processor,
+        AudioCommand::StopTrack(track_id),
+        &[],
+        1,
+    );
+}
+
+fn submit_block(
+    adapter: &mut native_audio_host::CommandAdapter,
+    processor: &mut Processor,
+    command: AudioCommand,
+    input: &[f32],
+    output_frames: usize,
+) {
+    adapter.submit(command).expect("setup command is admitted");
+    assert_eq!(adapter.flush(1), 1);
+    let mut output = [0.0; 4];
+    processor.process_block(input, &mut output[..output_frames], HostEvent::None);
+    adapter
+        .take_outcome()
+        .expect("setup command has an outcome");
+}
+
+#[test]
 fn per_block_work_is_bounded_and_remaining_commands_keep_fifo_order() {
     let (mut adapter, mut processor) = Processor::controlled_with_limits(16, 48_000, 8, 8, 2);
     let first = adapter.submit(AudioCommand::SetMasterGain(0.2)).unwrap();
@@ -231,7 +356,7 @@ fn host_fault_invalidates_old_generation_before_applying_ui_commands() {
     let stale_staged = adapter.submit(AudioCommand::SetMasterGain(0.25)).unwrap();
     adapter.flush(1);
     let mut output = [0.0; 1];
-    processor.process_block(&[], &mut output, HostEvent::CaptureLost);
+    processor.process_block(&[], &mut output, HostEvent::DeviceFailed);
     assert_eq!(processor.session_generation(), stale.generation + 1);
     assert!(!processor.monitoring());
     assert_eq!(
@@ -262,6 +387,149 @@ fn host_fault_invalidates_old_generation_before_applying_ui_commands() {
     assert_eq!(
         adapter.take_outcome().unwrap().command_id(),
         current.command_id
+    );
+}
+
+#[test]
+fn shutdown_then_restart_without_a_render_block_still_interrupts_the_session() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    adapter.submit(AudioCommand::SetMonitoring(true)).unwrap();
+    adapter.submit(AudioCommand::Record(0)).unwrap();
+    adapter.flush(8);
+    let mut output = [0.0; 1];
+    processor.process_block(&[0.5], &mut output, HostEvent::None);
+    assert_eq!(
+        processor.snapshot().tracks[0].state,
+        loop_engine::TrackState::Recording
+    );
+    assert!(processor.monitoring());
+
+    adapter.shutdown();
+    adapter.restart();
+    processor.process_block(&[0.75], &mut output, HostEvent::None);
+
+    assert_eq!(
+        processor.snapshot().tracks[0].state,
+        loop_engine::TrackState::Empty
+    );
+    assert_eq!(processor.snapshot().tracks[0].captured_samples, 0);
+    assert!(!processor.monitoring());
+    assert_eq!(output, [0.0]);
+}
+
+#[test]
+fn playback_only_capture_loss_keeps_transport_running_and_reports_the_gap() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    submit_block(
+        &mut adapter,
+        &mut processor,
+        AudioCommand::Record(0),
+        &[0.2, 0.4],
+        2,
+    );
+    submit_block(
+        &mut adapter,
+        &mut processor,
+        AudioCommand::Record(0),
+        &[],
+        1,
+    );
+    let generation = processor.session_generation();
+    let mut output = [0.0; 1];
+    processor.process_block(&[], &mut output, HostEvent::CaptureLost);
+
+    assert_eq!(output, [0.4]);
+    assert_eq!(
+        processor.snapshot().tracks[0].state,
+        loop_engine::TrackState::Playing
+    );
+    assert!(processor.snapshot().transport_running);
+    assert_eq!(processor.session_generation(), generation);
+    assert_eq!(processor.capture_discontinuities(), 1);
+}
+
+#[test]
+fn capture_loss_during_recording_interrupts_before_the_next_capture_block() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    submit_block(
+        &mut adapter,
+        &mut processor,
+        AudioCommand::Record(0),
+        &[0.2],
+        1,
+    );
+    let pending_ui_command = adapter.submit(AudioCommand::SetMonitoring(true)).unwrap();
+    adapter.flush(1);
+    let generation = processor.session_generation();
+    let mut output = [1.0; 1];
+    processor.process_block(&[0.8], &mut output, HostEvent::CaptureLost);
+
+    assert_eq!(
+        processor.snapshot().tracks[0].state,
+        loop_engine::TrackState::Empty
+    );
+    assert_eq!(processor.snapshot().tracks[0].captured_samples, 0);
+    assert!(!processor.monitoring());
+    assert_eq!(processor.session_generation(), generation + 1);
+    assert_eq!(processor.capture_discontinuities(), 1);
+    assert_eq!(output, [0.0]);
+    processor.process_block(&[], &mut output, HostEvent::None);
+    assert!(!processor.monitoring());
+    assert_eq!(
+        adapter.take_outcome(),
+        Some(CommandOutcome::Stale {
+            command_id: pending_ui_command.command_id,
+            generation: pending_ui_command.generation,
+        })
+    );
+}
+
+#[test]
+fn capture_loss_during_overdub_keeps_only_additions_written_before_the_gap() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    submit_block(
+        &mut adapter,
+        &mut processor,
+        AudioCommand::Record(0),
+        &[0.25, 0.5],
+        2,
+    );
+    submit_block(
+        &mut adapter,
+        &mut processor,
+        AudioCommand::Record(0),
+        &[],
+        1,
+    );
+    submit_block(
+        &mut adapter,
+        &mut processor,
+        AudioCommand::Record(0),
+        &[0.25],
+        1,
+    );
+    assert_eq!(
+        processor.snapshot().tracks[0].state,
+        loop_engine::TrackState::Overdubbing
+    );
+
+    let generation = processor.session_generation();
+    let mut output = [0.0; 1];
+    processor.process_block(&[0.9], &mut output, HostEvent::CaptureLost);
+    assert_eq!(
+        processor.snapshot().tracks[0].state,
+        loop_engine::TrackState::Stopped
+    );
+    assert_eq!(processor.session_generation(), generation + 1);
+
+    let replay = adapter.submit(AudioCommand::Play(0)).unwrap();
+    adapter.flush(1);
+    let mut replay_output = [0.0; 2];
+    processor.process_block(&[], &mut replay_output, HostEvent::None);
+    assert_eq!(replay_output, [0.25, 0.75]);
+    assert_eq!(
+        adapter.take_outcome().unwrap().command_id(),
+        replay.command_id
     );
 }
 

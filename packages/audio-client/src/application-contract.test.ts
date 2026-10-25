@@ -234,6 +234,8 @@ test('shared scheduling cases pass through the public audio application contract
 async function createProcessor() {
   const messages: Record<string, unknown>[] = [];
   const gainCalls: number[] = [];
+  const playCalls: number[] = [];
+  const trackStates = [0, 0];
   const engine = {
     memory: { buffer: new ArrayBuffer(4096) },
     initialize: () => 1,
@@ -247,14 +249,17 @@ async function createProcessor() {
     set_monitoring: () => 0,
     set_mode: () => 0,
     record: () => 0,
-    play: () => 0,
+    play: (trackId: number) => {
+      playCalls.push(trackId);
+      return 0;
+    },
     stop_track: () => 0,
     clear: () => 0,
     stop_transport: () => 0,
     reset: () => 0,
     interrupt: () => 0,
-    track_state: () => 0,
-    can_play: () => 0,
+    track_state: (trackId: number) => trackStates[trackId] ?? 0,
+    can_play: (trackId: number) => Number(trackStates[trackId] === 3),
     monitoring: () => 0,
   };
   let Processor!: new (options: unknown) => {
@@ -292,7 +297,16 @@ async function createProcessor() {
     const output = [new Float32Array(4), new Float32Array(4)];
     processor.process([[new Float32Array(4)]], [output]);
   };
-  return { processor, render, messages, gainCalls };
+  return {
+    processor,
+    render,
+    messages,
+    gainCalls,
+    playCalls,
+    setTrackStates: (states: number[]) => {
+      trackStates.splice(0, trackStates.length, ...states);
+    },
+  };
 }
 
 test('applies accepted commands FIFO at the next render block and reports frame and block', async () => {
@@ -356,6 +370,28 @@ test('applies accepted commands FIFO at the next render block and reports frame 
     applicationFrame: 4,
     blockSequence: 2,
   });
+});
+
+test('shared StartTracks cases preserve active tracks and start stopped tracks', async () => {
+  const { processor, render, playCalls, setTrackStates } =
+    await createProcessor();
+  const cases = sharedCommandCases.filter(
+    (fields) => fields[0] === 'start-tracks',
+  );
+  for (const [index, row] of cases.entries()) {
+    setTrackStates(row[2].split(',').map(Number));
+    playCalls.length = 0;
+    processor.port.onmessage({
+      data: {
+        type: 'application-command',
+        commandId: index + 1,
+        generation: 4,
+        command: { type: 'start-tracks' },
+      },
+    });
+    render();
+    expect(playCalls).toEqual(row[3].split(',').filter(Boolean).map(Number));
+  }
 });
 
 test('rejects stale generations and bounds queued command admission', async () => {

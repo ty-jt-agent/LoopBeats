@@ -4,7 +4,7 @@
 //! and is the only type that mutates it while rendering. The queues are allocated
 //! at construction; render-block work uses bounded, allocation-free operations.
 use crossbeam_queue::ArrayQueue;
-use loop_engine::{EngineSnapshot, LoopEngine, PlaybackMode};
+use loop_engine::{EngineSnapshot, LoopEngine, PlaybackMode, TrackState};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -108,7 +108,8 @@ pub struct Processor {
     block_budget: usize,
     block_sequence: u64,
     rendered_frames: u64,
-    was_active: bool,
+    observed_generation: u64,
+    capture_discontinuities: u64,
 }
 
 impl Processor {
@@ -150,34 +151,61 @@ impl Processor {
             block_budget,
             block_sequence: 0,
             rendered_frames: 0,
-            was_active: true,
+            observed_generation: 1,
+            capture_discontinuities: 0,
         };
         (adapter, processor)
     }
 
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32], event: HostEvent) {
         self.block_sequence = self.block_sequence.saturating_add(1);
-        if event != HostEvent::None {
-            self.shared.active.store(false, Ordering::Release);
-            self.shared.generation.fetch_add(1, Ordering::AcqRel);
+        let generation = self.shared.generation.load(Ordering::Acquire);
+        if generation != self.observed_generation {
             self.engine.interrupt();
-            self.invalidate_queued_commands();
-            self.was_active = false;
-            output.fill(0.0);
-            self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
-            return;
+            self.observed_generation = generation;
         }
         if !self.shared.active.load(Ordering::Acquire) {
-            if self.was_active {
-                self.engine.interrupt();
-                self.was_active = false;
-            }
             self.invalidate_queued_commands();
             output.fill(0.0);
             self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
             return;
         }
-        self.was_active = true;
+
+        match event {
+            HostEvent::DeviceFailed => {
+                self.shared.active.store(false, Ordering::Release);
+                self.observed_generation = self
+                    .shared
+                    .generation
+                    .fetch_add(1, Ordering::AcqRel)
+                    .wrapping_add(1);
+                self.engine.interrupt();
+                self.invalidate_queued_commands();
+                output.fill(0.0);
+                self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
+                return;
+            }
+            HostEvent::CaptureLost => {
+                self.capture_discontinuities = self.capture_discontinuities.saturating_add(1);
+                let capture_active = self.engine.snapshot().tracks.iter().any(|track| {
+                    matches!(track.state, TrackState::Recording | TrackState::Overdubbing)
+                });
+                if capture_active {
+                    self.observed_generation = self
+                        .shared
+                        .generation
+                        .fetch_add(1, Ordering::AcqRel)
+                        .wrapping_add(1);
+                    self.engine.interrupt();
+                }
+                // A lost capture block is never passed to the engine. With no
+                // active capture, an empty input lets existing playback advance.
+                self.engine.process(&[], output);
+                self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
+                return;
+            }
+            HostEvent::None => {}
+        }
 
         // This length is the block-start cutoff. Commands published after this
         // read are intentionally left for the next block.
@@ -233,6 +261,10 @@ impl Processor {
         self.rendered_frames
     }
 
+    pub fn capture_discontinuities(&self) -> u64 {
+        self.capture_discontinuities
+    }
+
     fn apply(&mut self, command: AudioCommand) {
         match command {
             AudioCommand::SetTrackGain { track_id, gain } => {
@@ -249,8 +281,20 @@ impl Processor {
             AudioCommand::StopTrack(track_id) => self.engine.stop_track(track_id),
             AudioCommand::StopTransport => self.engine.stop_transport(),
             AudioCommand::StartTracks => {
-                self.engine.play(0);
-                self.engine.play(1);
+                let tracks = self.engine.snapshot().tracks;
+                if tracks.iter().any(|track| {
+                    matches!(
+                        track.state,
+                        TrackState::Recording | TrackState::Playing | TrackState::Overdubbing
+                    )
+                }) {
+                    return;
+                }
+                for (track_id, track) in tracks.iter().enumerate() {
+                    if track.state == TrackState::Stopped && track.can_play {
+                        self.engine.play(track_id);
+                    }
+                }
             }
             AudioCommand::Clear(track_id) => self.engine.clear(track_id),
             AudioCommand::Reset => self.engine.reset(),
