@@ -40,3 +40,21 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
       - run: cargo build --locked --release --target wasm32-unknown-unknown -p loop-engine
+  windows-shell:
+    name: Windows Tauri build and launch smoke
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Build Windows x64 shell with startup smoke enabled
+        shell: pwsh
+        run: |
+          $env:VITE_WINDOWS_SHELL_SMOKE = 'true'
+          npm run tauri:build
+      - name: Launch packaged shell and verify its UI error state
+        shell: pwsh
+        run: ./apps/windows/scripts/smoke.ps1
