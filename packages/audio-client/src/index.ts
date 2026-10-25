@@ -429,17 +429,32 @@ export class AudioClient implements AudioApplication {
     commandId: number,
     command: AudioApplicationCommand,
   ): boolean {
+    const node = session.node;
+    if (!node) return false;
     try {
-      session.node?.port.postMessage({
+      node.port.postMessage({
         type: 'application-command',
         commandId,
         generation,
         command,
       });
+      this.cancelQueuedFxForCommand(command);
       this.pendingCommandPayloads.set(commandId, command);
-      return Boolean(session.node);
+      return true;
     } catch {
       return false;
+    }
+  }
+  private cancelQueuedFxForCommand(command: AudioApplicationCommand): void {
+    if (
+      command.type === 'reset' ||
+      command.type === 'stop-transport' ||
+      command.type === 'interrupt'
+    ) {
+      this.playbackFx.cancelQueued();
+      this.queuedFx = null;
+    } else if (command.type === 'clear' || command.type === 'stop-track') {
+      this.playbackFx.cancelQueued((command.trackId + 1) as PlaybackFxScope);
     }
   }
   private async dispatchDestructiveCommand(
@@ -1325,16 +1340,6 @@ export class AudioClient implements AudioApplication {
     }
   }
   private command(command: AudioCommand): void {
-    if (
-      command.type === 'reset' ||
-      command.type === 'stop-transport' ||
-      command.type === 'interrupt'
-    )
-      this.playbackFx.cancelQueued();
-    if (command.type === 'clear' || command.type === 'stop-track')
-      this.playbackFx.cancelQueued((command.trackId + 1) as PlaybackFxScope);
-    if (command.type === 'reset' || command.type === 'stop-transport')
-      this.queuedFx = null;
     if (command.type !== 'snapshot') this.submit(command);
   }
   setInputFx(config: FxConfig): void {
