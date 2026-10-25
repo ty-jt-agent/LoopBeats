@@ -1,0 +1,9 @@
+[package]
+name = "native-audio-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+crossbeam-queue = "0.3"
+loop-engine = { path = "../loop-engine" }
