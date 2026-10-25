@@ -8,6 +8,8 @@ import type {
 
 /** Browser-only capabilities kept outside the shared audio application contract. */
 export interface WebAudioExtensions {
+  listInputDevices?(): Promise<readonly { id: string; label: string }[]>;
+  subscribeInputDeviceChanges?(listener: () => void): () => void;
   subscribe(listener: () => void): () => void;
   getRecoverySnapshot(): RecoveryState;
   enableRecovery(): () => void;

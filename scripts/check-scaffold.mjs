@@ -13,6 +13,8 @@ const required = [
   'apps/web/src',
   'apps/web/public',
   'apps/web/tests',
+  'apps/windows/src',
+  'apps/windows/src-tauri/src',
   'packages/audio-client/src/worklet',
   'packages/domain/src',
   'packages/ui/src',
@@ -45,6 +47,44 @@ assert.doesNotMatch(
   applicationContract,
   /from\s+['"](?:react|@tauri-apps\/|@loopbeats\/audio-client|tauri)['"]|\b(?:AudioContext|AudioWorkletNode|navigator|window|document)\b/,
   'The platform-neutral audio contract must not depend on browser or desktop-shell APIs.',
+);
+async function sourceFiles(path) {
+  const directory = new URL(`../${path}`, import.meta.url);
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(
+    entries.map((entry) => {
+      const child = `${path}/${entry.name}`;
+      if (entry.isDirectory()) return sourceFiles(child);
+      return /\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name)
+        ? [child]
+        : [];
+    }),
+  );
+  return nested.flat();
+}
+const sharedUiFiles = [
+  ...(await sourceFiles('apps/web/src')).filter(
+    (path) => path !== 'apps/web/src/main.tsx',
+  ),
+  ...(await sourceFiles('packages/ui/src')),
+];
+for (const path of sharedUiFiles) {
+  const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    source,
+    /@tauri-apps\/|AudioContext|AudioWorkletNode|getUserMedia|navigator\.mediaDevices/,
+    `${path} must stay independent of Tauri and browser audio APIs.`,
+  );
+}
+const windowsManifest = JSON.parse(
+  await readFile(
+    new URL('../apps/windows/package.json', import.meta.url),
+    'utf8',
+  ),
+);
+assert.equal(
+  windowsManifest.scripts['tauri:build'],
+  'tauri build --target x86_64-pc-windows-msvc',
 );
 console.log(
   `Scaffold valid: ${required.length} paths, ${skills.length} project skills.`,

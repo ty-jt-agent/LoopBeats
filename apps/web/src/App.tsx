@@ -209,6 +209,7 @@ export function App({
   const recoverySubscribe = web?.subscribe ?? audio.subscribe;
   const getRecoverySnapshot = web?.getRecoverySnapshot ?? getNoRecoverySnapshot;
   const recovery = useSyncExternalStore(recoverySubscribe, getRecoverySnapshot);
+  const capabilities = audio.getCapabilities();
   const [commandError, setCommandError] = useState('');
   const sendCommand = useCallback(
     (command: AudioApplicationCommand) => {
@@ -238,18 +239,9 @@ export function App({
     [audio],
   );
   const refreshInputDevices = useCallback(async () => {
-    if (!web) return;
+    if (!web?.listInputDevices) return;
     try {
-      const devices =
-        (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
-      setInputDevices(
-        devices
-          .filter((device) => device.kind === 'audioinput')
-          .map((device, index) => ({
-            id: device.deviceId,
-            label: device.label || `Audio input ${index + 1}`,
-          })),
-      );
+      setInputDevices(await web.listInputDevices());
       setInputListError('');
     } catch {
       setInputListError(
@@ -263,9 +255,7 @@ export function App({
       void refreshInputDevices();
     };
     refresh();
-    navigator.mediaDevices?.addEventListener('devicechange', refresh);
-    return () =>
-      navigator.mediaDevices?.removeEventListener('devicechange', refresh);
+    return web.subscribeInputDeviceChanges?.(refresh);
   }, [web, snapshot.status, refreshInputDevices]);
   const restored = useRef(false);
   const skipPersistence = useRef(false);
@@ -436,7 +426,9 @@ export function App({
     snapshot.status === 'starting' || snapshot.status === 'recovering';
   const status = {
     idle: 'Audio stopped',
-    starting: 'Starting audio — allow microphone access when prompted',
+    starting: web
+      ? 'Starting audio — allow microphone access when prompted'
+      : 'Starting Windows audio host',
     ready: 'Audio ready',
     interrupted: 'Audio interrupted — recordings retained',
     recovering: 'Reinitializing audio — recordings retained',
@@ -484,8 +476,9 @@ export function App({
               </p>
               <p className="session-guidance">
                 Recordings are temporary. Preferences do not save recordings.
-                Browsers cannot guarantee prevention of page closure or recovery
-                of temporary audio.
+                {web
+                  ? 'Browsers cannot guarantee prevention of page closure or recovery of temporary audio.'
+                  : 'Closing the application may lose temporary recordings.'}
               </p>
               <div className="controls">
                 <button
@@ -718,6 +711,24 @@ export function App({
               Global STOP resets the timeline and retains completed audio;
               unfinished first capture is discarded. Monitoring is independent.
             </p>
+            <dl>
+              <dt>Input device selection</dt>
+              <dd>
+                {capabilities.inputDeviceSelection
+                  ? 'Available'
+                  : 'Unavailable'}
+              </dd>
+              <dt>Output device selection</dt>
+              <dd>
+                {capabilities.outputDeviceSelection
+                  ? 'Available'
+                  : 'Unavailable'}
+              </dd>
+              <dt>Input monitoring</dt>
+              <dd>{capabilities.monitoring ? 'Available' : 'Unavailable'}</dd>
+              <dt>FX scopes</dt>
+              <dd>{capabilities.supportedFxScopes.join(', ') || 'None'}</dd>
+            </dl>
           </details>
         </section>
       </div>
