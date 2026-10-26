@@ -9,20 +9,23 @@ written into a preallocated 16,384-frame FIFO. A render-owned linear resampler
 converts the capture clock to the render rate. Once per render block, a bounded
 proportional/integral controller uses FIFO occupancy to adjust the number of
 capture frames consumed per output frame, limited to ±5000 ppm. Startup primes
-the FIFO to two render periods converted to capture frames, keeping startup
-buffering tied to the negotiated render period. When capture is inactive, an
-excessive backlog discards a bounded batch of oldest samples and reports a
-discontinuity; it never does this during an initial recording or overdub.
-Overflow and underflow remain reported as discontinuities and preserve the existing active-capture
-interruption behavior. Resampling by itself does not trigger interruption.
+the FIFO to one negotiated capture period plus two render periods converted to
+capture frames. Playback-only stale recovery permits one additional normal
+capture packet above that target before it drops a bounded batch of oldest
+samples and reports a discontinuity. It never does this during initial
+recording or overdub. Overflow and underflow remain reported as discontinuities
+and preserve the existing active-capture interruption behavior. Resampling by
+itself does not trigger interruption.
 
 The controlled test seam verifies 48 kHz to 24 kHz conversion, correction
 direction and correction bounds. A 10,000-block simulation with varied 64–480
 frame render blocks, 96–480 frame capture packets, and a 1,000 ppm faster
 capture producer keeps FIFO occupancy within 300 frames of its 1,000-frame
-target without underflow or overflow. This is
-deterministic algorithm evidence; it does not establish the controller's
-stability on physical devices.
+target without underflow or overflow. A separate controlled cadence test
+delivers 480-frame capture packets against 128-frame render blocks and verifies
+that normal packets trigger neither stale recovery nor underflow. These are
+deterministic algorithm results; they do not establish controller stability on
+physical devices.
 
 ## Physical evidence
 
