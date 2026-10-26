@@ -13,8 +13,13 @@ use thiserror::Error;
 /// is dropped by a failed stream worker.
 #[cfg(any(windows, test))]
 fn settle_runtime_failure(processor: &mut native_audio_host::Processor) {
-    processor.process_block(&[], &mut [], native_audio_host::HostEvent::DeviceFailed);
+    process_runtime_failure(processor);
     processor.settle_pending_after_failure();
+}
+
+#[cfg(any(windows, test))]
+fn process_runtime_failure(processor: &mut native_audio_host::Processor) {
+    processor.process_block(&[], &mut [], native_audio_host::HostEvent::DeviceFailed);
 }
 
 #[cfg(windows)]
