@@ -12,6 +12,8 @@ use std::sync::Arc;
 pub const DEFAULT_COMMAND_CAPACITY: usize = 64;
 pub const DEFAULT_ACK_CAPACITY: usize = 128;
 pub const DEFAULT_BLOCK_BUDGET: usize = 16;
+const PUBLISHERS_CLOSED: usize = 1 << (usize::BITS - 1);
+const PUBLISHER_COUNT_MASK: usize = PUBLISHERS_CLOSED - 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AudioCommand {
@@ -90,6 +92,7 @@ struct SharedQueues {
     outstanding: Arc<AtomicUsize>,
     generation: Arc<AtomicU64>,
     active: Arc<AtomicBool>,
+    publisher_state: AtomicUsize,
     next_command_id: AtomicU64,
     ack_capacity: usize,
 }
@@ -137,6 +140,7 @@ impl Processor {
             outstanding: Arc::new(AtomicUsize::new(0)),
             generation: Arc::new(AtomicU64::new(1)),
             active: Arc::new(AtomicBool::new(true)),
+            publisher_state: AtomicUsize::new(0),
             next_command_id: AtomicU64::new(1),
             ack_capacity,
         });
@@ -173,6 +177,9 @@ impl Processor {
 
         match event {
             HostEvent::DeviceFailed => {
+                self.shared
+                    .publisher_state
+                    .fetch_or(PUBLISHERS_CLOSED, Ordering::AcqRel);
                 self.shared.active.store(false, Ordering::Release);
                 self.observed_generation = self
                     .shared
@@ -265,6 +272,19 @@ impl Processor {
         self.capture_discontinuities
     }
 
+    /// Finish queue cleanup after a device failure. Call outside the render
+    /// block, after admission has closed, so in-flight adapter publications
+    /// cannot arrive behind the processor's real-time failure drain.
+    pub fn settle_pending_after_failure(&mut self) {
+        if self.shared.active.load(Ordering::Acquire) {
+            return;
+        }
+        while self.shared.publisher_state.load(Ordering::Acquire) & PUBLISHER_COUNT_MASK != 0 {
+            std::hint::spin_loop();
+        }
+        self.invalidate_queued_commands();
+    }
+
     fn apply(&mut self, command: AudioCommand) {
         match command {
             AudioCommand::SetTrackGain { track_id, gain } => {
@@ -316,6 +336,9 @@ impl Processor {
 
 impl CommandAdapter {
     pub fn submit(&mut self, command: AudioCommand) -> Result<AcceptedCommand, RejectReason> {
+        let Some(_publisher) = PublisherGuard::try_new(&self.shared.publisher_state) else {
+            return Err(RejectReason::Unavailable);
+        };
         if !self.shared.active.load(Ordering::Acquire) {
             return Err(RejectReason::Unavailable);
         }
@@ -359,6 +382,14 @@ impl CommandAdapter {
 
     /// Move at most `limit` staged commands to the immutable audio queue.
     pub fn flush(&mut self, limit: usize) -> usize {
+        self.flush_with_hook(limit, || {})
+    }
+
+    fn flush_with_hook(&mut self, limit: usize, mut before_publish: impl FnMut()) -> usize {
+        let Some(_publisher) = PublisherGuard::try_new(&self.shared.publisher_state) else {
+            self.settle_staged_commands();
+            return 0;
+        };
         let mut handed_off = 0;
         let mut examined = 0;
         while examined < limit {
@@ -376,6 +407,7 @@ impl CommandAdapter {
                 );
                 continue;
             }
+            before_publish();
             match self.shared.audio.push(envelope) {
                 Ok(()) => handed_off += 1,
                 Err(envelope) => {
@@ -389,15 +421,7 @@ impl CommandAdapter {
 
     pub fn take_outcome(&mut self) -> Option<CommandOutcome> {
         if !self.shared.active.load(Ordering::Acquire) {
-            while let Some(envelope) = self.staging.pop_front() {
-                publish_outcome(
-                    &self.shared.outcomes,
-                    CommandOutcome::Stale {
-                        command_id: envelope.accepted.command_id,
-                        generation: envelope.accepted.generation,
-                    },
-                );
-            }
+            self.settle_staged_commands();
         }
         let outcome = self.shared.outcomes.pop()?;
         self.shared.outstanding.fetch_sub(1, Ordering::AcqRel);
@@ -409,6 +433,9 @@ impl CommandAdapter {
     }
 
     pub fn shutdown(&mut self) {
+        self.shared
+            .publisher_state
+            .fetch_or(PUBLISHERS_CLOSED, Ordering::AcqRel);
         self.shared.active.store(false, Ordering::Release);
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
         while let Some(envelope) = self.staging.pop_front() {
@@ -424,7 +451,20 @@ impl CommandAdapter {
 
     pub fn restart(&mut self) {
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
+        self.shared.publisher_state.store(0, Ordering::Release);
         self.shared.active.store(true, Ordering::Release);
+    }
+
+    fn settle_staged_commands(&mut self) {
+        while let Some(envelope) = self.staging.pop_front() {
+            publish_outcome(
+                &self.shared.outcomes,
+                CommandOutcome::Stale {
+                    command_id: envelope.accepted.command_id,
+                    generation: envelope.accepted.generation,
+                },
+            );
+        }
     }
 
     fn reserve_outcome(&self) -> bool {
@@ -434,6 +474,31 @@ impl CommandAdapter {
                 (current < self.shared.ack_capacity).then_some(current + 1)
             })
             .is_ok()
+    }
+}
+
+struct PublisherGuard<'a>(&'a AtomicUsize);
+
+impl<'a> PublisherGuard<'a> {
+    fn try_new(state: &'a AtomicUsize) -> Option<Self> {
+        state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if current & PUBLISHERS_CLOSED != 0
+                    || current & PUBLISHER_COUNT_MASK == PUBLISHER_COUNT_MASK
+                {
+                    None
+                } else {
+                    Some(current + 1)
+                }
+            })
+            .ok()
+            .map(|_| Self(state))
+    }
+}
+
+impl Drop for PublisherGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -476,5 +541,60 @@ fn is_same_gain_run(previous: AudioCommand, next: AudioCommand) -> bool {
         ) => previous_id == next_id,
         (AudioCommand::SetMasterGain(_), AudioCommand::SetMasterGain(_)) => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod publication_failure_tests {
+    use super::*;
+    use std::{sync::Barrier, thread};
+
+    #[test]
+    fn failure_settles_a_command_published_after_the_render_drain() {
+        let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+        let in_flight = adapter.submit(AudioCommand::SetMonitoring(true)).unwrap();
+        let still_staged = adapter.submit(AudioCommand::SetMasterGain(0.25)).unwrap();
+        let entered_publish = Arc::new(Barrier::new(2));
+        let resume_publish = Arc::new(Barrier::new(2));
+        let thread_entered = Arc::clone(&entered_publish);
+        let thread_resume = Arc::clone(&resume_publish);
+
+        let flush_thread = thread::spawn(move || {
+            let handed_off = adapter.flush_with_hook(1, || {
+                thread_entered.wait();
+                thread_resume.wait();
+            });
+            (adapter, handed_off)
+        });
+
+        entered_publish.wait();
+        processor.process_block(&[], &mut [], HostEvent::DeviceFailed);
+        resume_publish.wait();
+        let (mut adapter, handed_off) = flush_thread.join().unwrap();
+        assert_eq!(handed_off, 1);
+
+        processor.settle_pending_after_failure();
+        assert_eq!(
+            adapter.submit(AudioCommand::SetMonitoring(false)),
+            Err(RejectReason::Unavailable)
+        );
+        let outcomes = [
+            adapter.take_outcome().unwrap(),
+            adapter.take_outcome().unwrap(),
+        ];
+        assert_eq!(
+            outcomes,
+            [
+                CommandOutcome::Stale {
+                    command_id: in_flight.command_id,
+                    generation: in_flight.generation,
+                },
+                CommandOutcome::Stale {
+                    command_id: still_staged.command_id,
+                    generation: still_staged.generation,
+                },
+            ]
+        );
+        assert_eq!(adapter.take_outcome(), None);
     }
 }
