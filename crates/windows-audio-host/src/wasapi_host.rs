@@ -181,6 +181,7 @@ impl MonitoringHost {
             self.input.len(),
             self.signals.last_capture_discontinuity(),
             self.signals.last_capture_impact(),
+            self.signals.pending_capture_interruption(),
         )
     }
 }

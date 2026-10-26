@@ -155,6 +155,7 @@ pub struct HostDiagnostics {
     pub capture_queue_frames: usize,
     pub last_capture_discontinuity: Option<CaptureDiscontinuityReason>,
     pub last_capture_impact: Option<CaptureLossImpact>,
+    pub pending_capture_interruption: CaptureInterruptionNotices,
 }
 
 impl HostDiagnostics {
@@ -167,6 +168,7 @@ impl HostDiagnostics {
         capture_queue_frames: usize,
         last_capture_discontinuity: Option<CaptureDiscontinuityReason>,
         last_capture_impact: Option<CaptureLossImpact>,
+        pending_capture_interruption: CaptureInterruptionNotices,
     ) -> Self {
         Self {
             capture,
@@ -178,6 +180,7 @@ impl HostDiagnostics {
             capture_queue_frames,
             last_capture_discontinuity,
             last_capture_impact,
+            pending_capture_interruption,
         }
     }
 }
@@ -199,6 +202,23 @@ pub enum CaptureLossImpact {
     PlaybackContinued,
     InitialRecordingDiscarded { track_id: usize },
     OverdubMayBePartial { track_id: usize },
+}
+
+/// Sticky capture-interruption consequences, retained until explicitly
+/// acknowledged by a diagnostics consumer. Track IDs map to array indices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureInterruptionNotices {
+    pub initial_recording_discarded_tracks: [bool; 2],
+    pub overdub_may_be_partial_tracks: [bool; 2],
+}
+
+impl CaptureInterruptionNotices {
+    fn decode(encoded: u64) -> Self {
+        Self {
+            initial_recording_discarded_tracks: [encoded & 1 != 0, encoded & 2 != 0],
+            overdub_may_be_partial_tracks: [encoded & 4 != 0, encoded & 8 != 0],
+        }
+    }
 }
 
 pub fn capture_loss_impact(states: [TrackState; 2]) -> CaptureLossImpact {
@@ -305,6 +325,7 @@ pub struct HostSignals {
     device_failed: AtomicBool,
     last_capture_discontinuity: AtomicU64,
     last_capture_impact: AtomicU64,
+    pending_capture_interruption: AtomicU64,
 }
 
 impl HostSignals {
@@ -361,10 +382,35 @@ impl HostSignals {
     pub fn record_capture_impact(&self, impact: CaptureLossImpact) {
         self.last_capture_impact
             .store(encode_capture_loss_impact(impact), Ordering::Release);
+        let notice = match impact {
+            CaptureLossImpact::PlaybackContinued => 0,
+            CaptureLossImpact::InitialRecordingDiscarded { track_id: 0 } => 1,
+            CaptureLossImpact::InitialRecordingDiscarded { track_id: 1 } => 2,
+            CaptureLossImpact::OverdubMayBePartial { track_id: 0 } => 4,
+            CaptureLossImpact::OverdubMayBePartial { track_id: 1 } => 8,
+            CaptureLossImpact::InitialRecordingDiscarded { .. }
+            | CaptureLossImpact::OverdubMayBePartial { .. } => 0,
+        };
+        self.pending_capture_interruption
+            .fetch_or(notice, Ordering::AcqRel);
     }
 
     pub fn last_capture_impact(&self) -> Option<CaptureLossImpact> {
         decode_capture_loss_impact(self.last_capture_impact.load(Ordering::Acquire))
+    }
+
+    pub fn pending_capture_interruption(&self) -> CaptureInterruptionNotices {
+        CaptureInterruptionNotices::decode(
+            self.pending_capture_interruption.load(Ordering::Acquire),
+        )
+    }
+
+    /// Acknowledge all capture interruptions observed so far. Any concurrent
+    /// interruption after this swap remains pending for the next poll.
+    pub fn acknowledge_capture_interruption(&self) -> CaptureInterruptionNotices {
+        CaptureInterruptionNotices::decode(
+            self.pending_capture_interruption.swap(0, Ordering::AcqRel),
+        )
     }
 }
 
@@ -546,6 +592,68 @@ mod tests {
             signals.record_capture_impact(expected);
             assert_eq!(signals.last_capture_impact(), Some(expected));
         }
+    }
+
+    #[test]
+    fn delayed_diagnostics_poll_keeps_partial_overdub_notice_after_playback_loss() {
+        use native_audio_host::{AudioCommand, HostEvent, Processor};
+
+        let (mut commands, mut processor) = Processor::controlled(16, 48_000);
+        let mut output = [0.0; 4];
+        for (command, input) in [
+            (AudioCommand::Record(0), &[0.25, 0.5][..]),
+            (AudioCommand::Record(0), &[][..]),
+            (AudioCommand::Record(0), &[0.25][..]),
+        ] {
+            commands.submit(command).unwrap();
+            assert_eq!(commands.flush(1), 1);
+            processor.process_block(input, &mut output[..input.len().max(1)], HostEvent::None);
+            commands.take_outcome().unwrap();
+        }
+        assert_eq!(
+            processor.snapshot().tracks[0].state,
+            TrackState::Overdubbing
+        );
+
+        let signals = HostSignals::default();
+        let impact = capture_loss_impact(processor.snapshot().tracks.map(|track| track.state));
+        assert_eq!(
+            impact,
+            CaptureLossImpact::OverdubMayBePartial { track_id: 0 }
+        );
+        signals.record_capture_impact(impact);
+        processor.process_block(&[0.9], &mut output[..1], HostEvent::CaptureLost);
+
+        // A later underflow occurs after the capture has stopped. Diagnostics
+        // are deliberately read only after that playback-only recovery block.
+        let later_impact =
+            capture_loss_impact(processor.snapshot().tracks.map(|track| track.state));
+        assert_eq!(later_impact, CaptureLossImpact::PlaybackContinued);
+        signals.record_capture_impact(later_impact);
+        processor.process_block(&[], &mut output[..1], HostEvent::CaptureLost);
+
+        assert_eq!(
+            signals.last_capture_impact(),
+            Some(CaptureLossImpact::PlaybackContinued)
+        );
+        assert_eq!(
+            signals.pending_capture_interruption(),
+            CaptureInterruptionNotices {
+                initial_recording_discarded_tracks: [false; 2],
+                overdub_may_be_partial_tracks: [true, false],
+            }
+        );
+        assert_eq!(
+            signals.acknowledge_capture_interruption(),
+            CaptureInterruptionNotices {
+                initial_recording_discarded_tracks: [false; 2],
+                overdub_may_be_partial_tracks: [true, false],
+            }
+        );
+        assert_eq!(
+            signals.pending_capture_interruption(),
+            CaptureInterruptionNotices::default()
+        );
     }
 
     #[test]
