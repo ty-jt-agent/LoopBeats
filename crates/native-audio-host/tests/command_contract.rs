@@ -366,7 +366,6 @@ fn host_fault_invalidates_old_generation_before_applying_ui_commands() {
             generation: stale.generation,
         }
     );
-    assert_eq!(adapter.flush(8), 0);
     assert_eq!(
         adapter.take_outcome().unwrap(),
         CommandOutcome::Stale {
@@ -374,6 +373,7 @@ fn host_fault_invalidates_old_generation_before_applying_ui_commands() {
             generation: stale_staged.generation,
         }
     );
+    assert_eq!(adapter.flush(8), 0);
 
     assert_eq!(
         adapter.submit(AudioCommand::SetMonitoring(true)),

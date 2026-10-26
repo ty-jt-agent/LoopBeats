@@ -9,6 +9,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
+/// Run the scheduler's terminal device-failure transition before its processor
+/// is dropped by a failed stream worker.
+#[cfg(any(windows, test))]
+fn settle_runtime_failure(processor: &mut native_audio_host::Processor) {
+    processor.process_block(&[], &mut [], native_audio_host::HostEvent::DeviceFailed);
+}
+
 #[cfg(windows)]
 mod wasapi_host;
 
@@ -493,6 +500,38 @@ mod tests {
         assert_eq!(
             commands.submit(AudioCommand::Play(0)),
             Err(RejectReason::Unavailable)
+        );
+    }
+
+    #[test]
+    fn runtime_failure_settles_accepted_commands_and_closes_admission() {
+        use native_audio_host::{AudioCommand, CommandOutcome, Processor, RejectReason};
+
+        let (mut commands, mut processor) = Processor::controlled(64, 48_000);
+        let handed_off = commands.submit(AudioCommand::SetMonitoring(true)).unwrap();
+        let staged = commands.submit(AudioCommand::SetMasterGain(0.25)).unwrap();
+        commands.flush(1);
+
+        settle_runtime_failure(&mut processor);
+
+        assert_eq!(processor.session_generation(), handed_off.generation + 1);
+        assert_eq!(
+            commands.submit(AudioCommand::SetMonitoring(false)),
+            Err(RejectReason::Unavailable)
+        );
+        assert_eq!(
+            commands.take_outcome(),
+            Some(CommandOutcome::Stale {
+                command_id: handed_off.command_id,
+                generation: handed_off.generation,
+            })
+        );
+        assert_eq!(
+            commands.take_outcome(),
+            Some(CommandOutcome::Stale {
+                command_id: staged.command_id,
+                generation: staged.generation,
+            })
         );
     }
 }
