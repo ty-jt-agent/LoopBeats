@@ -179,6 +179,8 @@ impl MonitoringHost {
             self.signals.counters(),
             self.signals.device_failed(),
             self.input.len(),
+            self.signals.last_capture_discontinuity(),
+            self.signals.last_capture_impact(),
         )
     }
 }
@@ -309,9 +311,10 @@ fn run_capture(
                 return Err(HostError::UnsupportedFormat);
             }
             let (frames, info) = capture.read_from_device(&mut raw).map_err(map_error)?;
-            if info.flags.data_discontinuity || prior_index.is_some_and(|prior| prior != info.index)
+            if let Some(reason) =
+                capture_packet_discontinuity(info.flags.data_discontinuity, prior_index, info.index)
             {
-                signals.capture_discontinuity();
+                signals.capture_discontinuity(reason);
             }
             prior_index = Some(info.index.saturating_add(frames as u64));
             if info.flags.silent {
@@ -430,13 +433,19 @@ fn run_render(
         }
         let was_signaled_lost = signals.take_capture_loss();
         if missing_input && !was_signaled_lost {
-            signals.count_capture_discontinuity();
+            signals.record_capture_discontinuity(CaptureDiscontinuityReason::RenderInputUnderflow);
         }
         let event_kind = if missing_input || was_signaled_lost {
             HostEvent::CaptureLost
         } else {
             HostEvent::None
         };
+        if event_kind == HostEvent::CaptureLost {
+            let snapshot = processor.snapshot();
+            signals.record_capture_impact(capture_loss_impact(
+                snapshot.tracks.map(|track| track.state),
+            ));
+        }
         processor.process_block(&frames[..available], &mut output[..available], event_kind);
         encode_output(
             &output[..available],
