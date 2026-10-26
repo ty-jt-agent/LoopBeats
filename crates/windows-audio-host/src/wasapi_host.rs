@@ -1,8 +1,8 @@
 use super::*;
 use crossbeam_queue::ArrayQueue;
-use loop_engine::TrackState;
+use loop_engine::{EngineSnapshot, TrackState};
 use native_audio_host::{CommandAdapter, HostEvent, Processor};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 use wasapi::{
@@ -55,6 +55,9 @@ pub struct MonitoringHost {
     workers: WorkerGroup,
     input: Arc<ArrayQueue<f32>>,
     clock_correction_ppm: Arc<AtomicI32>,
+    snapshot_feed: Arc<ArrayQueue<EngineSnapshot>>,
+    latest_engine_snapshot: Option<EngineSnapshot>,
+    rendered_frames: Arc<AtomicU64>,
 }
 
 impl MonitoringHost {
@@ -67,6 +70,8 @@ impl MonitoringHost {
             return Err(HostError::InvalidConfiguration);
         }
         let (commands, processor) = Processor::controlled(capacity, render_rate);
+        let snapshot_feed = processor.snapshot_feed();
+        let rendered_frames = processor.rendered_frames_feed();
         let signals = Arc::new(HostSignals::default());
         let mut workers = WorkerGroup::new();
         let stop = workers.stop_signal();
@@ -176,12 +181,26 @@ impl MonitoringHost {
             workers,
             input,
             clock_correction_ppm,
+            snapshot_feed,
+            latest_engine_snapshot: None,
+            rendered_frames,
         })
     }
 
     pub fn shutdown(mut self) {
         self.commands.shutdown();
         self.workers.shutdown();
+    }
+
+    pub fn latest_snapshot(&mut self) -> Option<EngineSnapshot> {
+        while let Some(snapshot) = self.snapshot_feed.pop() {
+            self.latest_engine_snapshot = Some(snapshot);
+        }
+        self.latest_engine_snapshot
+    }
+
+    pub fn rendered_frames(&self) -> u64 {
+        self.rendered_frames.load(Ordering::Acquire)
     }
 
     pub fn diagnostics(&self) -> HostDiagnostics {

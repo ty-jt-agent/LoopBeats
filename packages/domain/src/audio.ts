@@ -52,6 +52,7 @@ export interface AudioSnapshot {
   readonly fx?: SessionFxSnapshot;
   readonly inputFxPending?: boolean;
   readonly inputFxError?: string | null;
+  readonly masterFxError?: string | null;
   readonly playbackFxPending?: readonly boolean[];
   readonly playbackFxErrors?: readonly (string | null)[];
   readonly inputDeviceId: string | null;
@@ -129,6 +130,7 @@ export type AudioEngineSnapshot = Pick<
   | 'fx'
   | 'inputFxPending'
   | 'inputFxError'
+  | 'masterFxError'
   | 'playbackFxPending'
   | 'playbackFxErrors'
   | 'masterGain'
@@ -143,7 +145,23 @@ export type AudioEngineSnapshot = Pick<
 export type AudioHostSnapshot = Pick<
   AudioSnapshot,
   'inputDeviceId' | 'status' | 'error' | 'sampleRate'
->;
+> & {
+  readonly captureInterruption?: CaptureInterruptionSnapshot | null;
+};
+
+export interface CaptureInterruptionSnapshot {
+  readonly reason:
+    | 'wasapi-reported'
+    | 'capture-packet-gap'
+    | 'capture-queue-overflow'
+    | 'render-input-underflow'
+    | 'capture-backlog-discarded';
+  readonly initialRecordingDiscardedTracks: readonly TrackId[];
+  readonly overdubMayBePartialTracks: readonly TrackId[];
+  readonly completedRecordingsRetained: true;
+  readonly transportReset: true;
+  readonly monitoringDisabled: true;
+}
 
 export interface AudioApplicationSnapshot {
   readonly engine: AudioEngineSnapshot;

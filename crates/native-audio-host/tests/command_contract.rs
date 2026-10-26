@@ -1,7 +1,73 @@
+use loop_engine::{FxConfig, TrackState};
 use native_audio_host::{AudioCommand, CommandOutcome, HostEvent, Processor, RejectReason};
 
 const SHARED_CONFORMANCE_CASES: &str =
     include_str!("../../../packages/domain/test-fixtures/audio-command-conformance.csv");
+
+#[test]
+fn applies_an_existing_effect_at_the_render_boundary_and_reports_its_state() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    let accepted = adapter
+        .submit(AudioCommand::SetFx {
+            scope: 0,
+            config: FxConfig::LowPass {
+                cutoff_hz: 2_000.0,
+                bypassed: false,
+            },
+        })
+        .unwrap();
+    assert_eq!(adapter.flush(1), 1);
+
+    let mut output = [0.0; 4];
+    processor.process_block(&[0.25; 4], &mut output, HostEvent::None);
+
+    assert_eq!(
+        processor.snapshot().fx[0].config,
+        FxConfig::LowPass {
+            cutoff_hz: 2_000.0,
+            bypassed: false,
+        }
+    );
+    assert_eq!(
+        adapter.take_outcome(),
+        Some(CommandOutcome::Applied {
+            command_id: accepted.command_id,
+            generation: accepted.generation,
+            application_frame: 0,
+            block_sequence: 1,
+        })
+    );
+}
+
+#[test]
+fn published_snapshots_show_applied_state_and_confirmed_capture_interruption() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    let snapshots = processor.snapshot_feed();
+    let monitoring = adapter.submit(AudioCommand::SetMonitoring(true)).unwrap();
+    let record = adapter.submit(AudioCommand::Record(0)).unwrap();
+    assert_eq!(adapter.flush(2), 2);
+
+    let mut output = [0.0; 4];
+    processor.process_block(&[0.25; 4], &mut output, HostEvent::None);
+    assert_eq!(
+        adapter.take_outcome().unwrap().command_id(),
+        monitoring.command_id
+    );
+    assert_eq!(
+        adapter.take_outcome().unwrap().command_id(),
+        record.command_id
+    );
+    let applied = snapshots.pop().unwrap();
+    assert!(applied.monitoring);
+    assert_eq!(applied.tracks[0].state, TrackState::Recording);
+
+    processor.process_block(&[0.5; 4], &mut output, HostEvent::CaptureLost);
+    let interrupted = snapshots.pop().unwrap();
+    assert!(!interrupted.monitoring);
+    assert_eq!(interrupted.tracks[0].state, TrackState::Empty);
+    assert!(!interrupted.transport_running);
+    assert_eq!(interrupted.transport_position_samples, 0);
+}
 
 #[test]
 fn commands_published_before_a_block_apply_fifo_with_actual_block_position() {

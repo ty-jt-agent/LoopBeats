@@ -12,6 +12,12 @@ tauri-build = { version = "2.7.2", features = [] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.12.3", features = [] }
 
+[target.'cfg(windows)'.dependencies]
+loop-engine = { path = "../../../crates/loop-engine" }
+native-audio-host = { path = "../../../crates/native-audio-host" }
+windows-audio-host = { path = "../../../crates/windows-audio-host" }
+serde_json = "1"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 

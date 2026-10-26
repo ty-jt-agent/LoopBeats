@@ -4,7 +4,7 @@
 //! and is the only type that mutates it while rendering. The queues are allocated
 //! at construction; render-block work uses bounded, allocation-free operations.
 use crossbeam_queue::ArrayQueue;
-use loop_engine::{EngineSnapshot, LoopEngine, PlaybackMode, TrackState};
+use loop_engine::{EngineSnapshot, FxConfig, LoopEngine, PlaybackMode, TrackState};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -21,6 +21,7 @@ pub enum AudioCommand {
     SetTrackGain { track_id: usize, gain: f32 },
     SetTrackMute { track_id: usize, muted: bool },
     SetMasterGain(f32),
+    SetFx { scope: usize, config: FxConfig },
     SetMonitoring(bool),
     SetMode { track_id: usize, mode: PlaybackMode },
     Record(usize),
@@ -62,6 +63,10 @@ pub enum CommandOutcome {
         command_id: u64,
         generation: u64,
     },
+    Failed {
+        command_id: u64,
+        generation: u64,
+    },
 }
 
 impl CommandOutcome {
@@ -69,7 +74,8 @@ impl CommandOutcome {
         match self {
             Self::Applied { command_id, .. }
             | Self::Superseded { command_id, .. }
-            | Self::Stale { command_id, .. } => command_id,
+            | Self::Stale { command_id, .. }
+            | Self::Failed { command_id, .. } => command_id,
         }
     }
 }
@@ -108,6 +114,8 @@ pub struct CommandAdapter {
 /// Audio-thread-owned engine and bounded render-block command application.
 pub struct Processor {
     shared: Arc<SharedQueues>,
+    published_snapshot: Arc<ArrayQueue<EngineSnapshot>>,
+    published_frames: Arc<AtomicU64>,
     engine: LoopEngine,
     block_budget: usize,
     block_sequence: u64,
@@ -145,6 +153,8 @@ impl Processor {
             next_command_id: AtomicU64::new(1),
             ack_capacity,
         });
+        let published_snapshot = Arc::new(ArrayQueue::new(1));
+        let published_frames = Arc::new(AtomicU64::new(0));
         let adapter = CommandAdapter {
             shared: Arc::clone(&shared),
             staging: VecDeque::with_capacity(command_capacity),
@@ -152,6 +162,8 @@ impl Processor {
         };
         let processor = Self {
             shared,
+            published_snapshot,
+            published_frames,
             engine: LoopEngine::with_capacity_and_sample_rate(samples, sample_rate),
             block_budget,
             block_sequence: 0,
@@ -159,6 +171,7 @@ impl Processor {
             observed_generation: 1,
             capture_discontinuities: 0,
         };
+        processor.publish_snapshot();
         (adapter, processor)
     }
 
@@ -173,6 +186,7 @@ impl Processor {
             self.invalidate_queued_commands();
             output.fill(0.0);
             self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
+            self.publish_snapshot();
             return;
         }
 
@@ -192,6 +206,7 @@ impl Processor {
                 self.invalidate_queued_commands();
                 output.fill(0.0);
                 self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
+                self.publish_snapshot();
                 return;
             }
             HostEvent::CaptureLost => {
@@ -211,6 +226,7 @@ impl Processor {
                 // active capture, an empty input lets existing playback advance.
                 self.engine.process(&[], output);
                 self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
+                self.publish_snapshot();
                 return;
             }
             HostEvent::None => {}
@@ -234,20 +250,54 @@ impl Processor {
                     },
                 );
             } else {
-                self.apply(envelope.command);
-                publish_outcome(
-                    &self.shared.outcomes,
-                    CommandOutcome::Applied {
-                        command_id: envelope.accepted.command_id,
-                        generation: current_generation,
-                        application_frame: self.rendered_frames,
-                        block_sequence: self.block_sequence,
-                    },
-                );
+                if self.apply(envelope.command) {
+                    publish_outcome(
+                        &self.shared.outcomes,
+                        CommandOutcome::Applied {
+                            command_id: envelope.accepted.command_id,
+                            generation: current_generation,
+                            application_frame: self.rendered_frames,
+                            block_sequence: self.block_sequence,
+                        },
+                    );
+                } else {
+                    publish_outcome(
+                        &self.shared.outcomes,
+                        CommandOutcome::Failed {
+                            command_id: envelope.accepted.command_id,
+                            generation: current_generation,
+                        },
+                    );
+                }
             }
         }
         self.engine.process(input, output);
         self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
+        self.publish_snapshot();
+    }
+
+    fn publish_snapshot(&self) {
+        self.published_frames
+            .store(self.rendered_frames, Ordering::Release);
+        let snapshot = self.engine.snapshot();
+        let _ = self.published_snapshot.pop();
+        let _ = self.published_snapshot.push(snapshot);
+    }
+
+    pub fn take_published_snapshot(&self) -> Option<EngineSnapshot> {
+        let mut latest = None;
+        while let Some(snapshot) = self.published_snapshot.pop() {
+            latest = Some(snapshot);
+        }
+        latest
+    }
+
+    pub fn snapshot_feed(&self) -> Arc<ArrayQueue<EngineSnapshot>> {
+        Arc::clone(&self.published_snapshot)
+    }
+
+    pub fn rendered_frames_feed(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.published_frames)
     }
 
     pub fn snapshot(&self) -> EngineSnapshot {
@@ -290,7 +340,7 @@ impl Processor {
             .fetch_and(!PUBLISHER_CLEANUP_REQUIRED, Ordering::Release);
     }
 
-    fn apply(&mut self, command: AudioCommand) {
+    fn apply(&mut self, command: AudioCommand) -> bool {
         match command {
             AudioCommand::SetTrackGain { track_id, gain } => {
                 self.engine.set_track_gain(track_id, gain)
@@ -299,6 +349,15 @@ impl Processor {
                 self.engine.set_track_mute(track_id, muted)
             }
             AudioCommand::SetMasterGain(gain) => self.engine.set_master_gain(gain),
+            AudioCommand::SetFx { scope, config } => {
+                return match scope {
+                    0 => self.engine.set_input_fx(config),
+                    1 | 2 => self.engine.set_track_fx(scope - 1, config),
+                    3 => self.engine.set_master_fx(config),
+                    _ => return false,
+                }
+                .is_ok();
+            }
             AudioCommand::SetMonitoring(enabled) => self.engine.set_monitoring(enabled),
             AudioCommand::SetMode { track_id, mode } => self.engine.set_mode(track_id, mode),
             AudioCommand::Record(track_id) => self.engine.record(track_id),
@@ -313,7 +372,7 @@ impl Processor {
                         TrackState::Recording | TrackState::Playing | TrackState::Overdubbing
                     )
                 }) {
-                    return;
+                    return true;
                 }
                 for (track_id, track) in tracks.iter().enumerate() {
                     if track.state == TrackState::Stopped && track.can_play {
@@ -324,6 +383,7 @@ impl Processor {
             AudioCommand::Clear(track_id) => self.engine.clear(track_id),
             AudioCommand::Reset => self.engine.reset(),
         }
+        true
     }
 
     fn invalidate_queued_commands(&mut self) {
@@ -544,6 +604,13 @@ fn is_valid(command: AudioCommand) -> bool {
         | AudioCommand::StopTrack(track_id)
         | AudioCommand::Clear(track_id) => valid_track(track_id),
         AudioCommand::SetMasterGain(gain) => gain.is_finite() && (0.0..=1.0).contains(&gain),
+        AudioCommand::SetFx { scope, config } => {
+            scope < 4
+                && match config {
+                    FxConfig::None => true,
+                    FxConfig::LowPass { cutoff_hz, .. } => cutoff_hz.is_finite() && cutoff_hz > 0.0,
+                }
+        }
         AudioCommand::SetMonitoring(_)
         | AudioCommand::StopTransport
         | AudioCommand::StartTracks

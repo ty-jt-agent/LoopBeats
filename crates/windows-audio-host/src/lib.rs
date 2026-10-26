@@ -210,7 +210,7 @@ pub enum CaptureDiscontinuityReason {
     CapturePacketGap = 1,
     CaptureQueueOverflow = 2,
     RenderInputUnderflow = 3,
-    StaleCaptureDiscarded = 4,
+    CaptureBacklogDiscarded = 4,
 }
 
 /// The session-level effect of a confirmed capture discontinuity.
@@ -540,7 +540,7 @@ impl HostSignals {
             2 => Some(CaptureDiscontinuityReason::CapturePacketGap),
             3 => Some(CaptureDiscontinuityReason::CaptureQueueOverflow),
             4 => Some(CaptureDiscontinuityReason::RenderInputUnderflow),
-            5 => Some(CaptureDiscontinuityReason::StaleCaptureDiscarded),
+            5 => Some(CaptureDiscontinuityReason::CaptureBacklogDiscarded),
             _ => None,
         }
     }
@@ -1000,10 +1000,10 @@ mod tests {
         assert_eq!(queue.pop(), Some(5.0));
         assert_eq!(queue.len(), 2);
         let signals = HostSignals::default();
-        signals.record_capture_discontinuity(CaptureDiscontinuityReason::StaleCaptureDiscarded);
+        signals.record_capture_discontinuity(CaptureDiscontinuityReason::CaptureBacklogDiscarded);
         assert_eq!(
             signals.last_capture_discontinuity(),
-            Some(CaptureDiscontinuityReason::StaleCaptureDiscarded)
+            Some(CaptureDiscontinuityReason::CaptureBacklogDiscarded)
         );
     }
 

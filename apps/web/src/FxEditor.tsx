@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { FxConfig, FxScope, FxSnapshot } from '@loopbeats/domain';
 import type { AudioSnapshot } from '@loopbeats/domain';
-import type { WebAudioExtensions } from './web-audio-extensions';
 import { fxStateLabel } from './fx-state';
 
 const scopes: readonly { id: FxScope; name: string }[] = [
@@ -48,7 +47,8 @@ function formatCutoff(cutoffHz: number) {
 }
 
 export function FxEditor({
-  client,
+  onConfigChange,
+  supportedScopes,
   snapshot,
   enabled,
   scope,
@@ -56,7 +56,8 @@ export function FxEditor({
   onScopeChange,
   onClose,
 }: {
-  client: WebAudioExtensions;
+  onConfigChange: (scope: FxScope, config: FxConfig) => void;
+  supportedScopes: readonly FxScope[];
   snapshot: AudioSnapshot;
   enabled: boolean;
   scope: FxScope;
@@ -73,24 +74,16 @@ export function FxEditor({
   const slot = snapshot.fx?.[scope];
   const maximum = Math.min(20000, (snapshot.sampleRate ?? 48000) * 0.45);
   const playbackIndex = scope - 1;
-  const commands =
+  const pending =
     scope === 0
-      ? {
-          pending: snapshot.inputFxPending ?? false,
-          error: snapshot.inputFxError,
-          setConfig: (config: FxConfig) => client.setInputFx(config),
-          setCutoff: (cutoffHz: number) => client.setInputCutoff(cutoffHz),
-          setBypass: (bypassed: boolean) => client.setInputBypass(bypassed),
-        }
-      : {
-          pending: snapshot.playbackFxPending?.[playbackIndex] ?? false,
-          error: snapshot.playbackFxErrors?.[playbackIndex],
-          setConfig: (config: FxConfig) => client.setPlaybackFx(scope, config),
-          setCutoff: (cutoffHz: number) =>
-            client.setPlaybackCutoff(scope, cutoffHz),
-          setBypass: (bypassed: boolean) =>
-            client.setPlaybackBypass(scope, bypassed),
-        };
+      ? (snapshot.inputFxPending ?? false)
+      : (snapshot.playbackFxPending?.[playbackIndex] ?? false);
+  const error =
+    scope === 0
+      ? snapshot.inputFxError
+      : scope === 3
+        ? snapshot.masterFxError
+        : snapshot.playbackFxErrors?.[playbackIndex];
   const config = slot?.config ?? {
     type: 'LowPass' as const,
     cutoffHz: maximum,
@@ -104,7 +97,7 @@ export function FxEditor({
   );
   const setCutoff = (next: number) => {
     const bounded = Math.max(20, Math.min(maximum, next));
-    commands.setCutoff(bounded);
+    if (hasFilter) onConfigChange(scope, { ...config, cutoffHz: bounded });
   };
   const acknowledgedState = !hasFilter
     ? 'None'
@@ -143,7 +136,11 @@ export function FxEditor({
           }
         >
           {scopes.map((option) => (
-            <option key={option.id} value={option.id}>
+            <option
+              key={option.id}
+              value={option.id}
+              disabled={!supportedScopes.includes(option.id)}
+            >
               {option.name}
             </option>
           ))}
@@ -155,9 +152,10 @@ export function FxEditor({
           <select
             aria-label={`${label} effect`}
             value={config.type}
-            disabled={!editable || commands.pending}
+            disabled={!editable || pending}
             onChange={(event) =>
-              commands.setConfig(
+              onConfigChange(
+                scope,
                 event.currentTarget.value === 'None'
                   ? { type: 'None' }
                   : { type: 'LowPass', cutoffHz: maximum, bypassed: true },
@@ -177,8 +175,11 @@ export function FxEditor({
               : `Enable ${label} filter`
           }
           aria-pressed={hasFilter && !config.bypassed}
-          disabled={!editable || !hasFilter || commands.pending}
-          onClick={() => hasFilter && commands.setBypass(!config.bypassed)}
+          disabled={!editable || !hasFilter || pending}
+          onClick={() =>
+            hasFilter &&
+            onConfigChange(scope, { ...config, bypassed: !config.bypassed })
+          }
         >
           {hasFilter && !config.bypassed ? 'Bypass' : 'On'}
         </button>
@@ -231,7 +232,7 @@ export function FxEditor({
           ? 'Start audio to edit effects.'
           : slot.removing
             ? `Removing the ${label} filter. Wait for removal to finish.`
-            : commands.pending
+            : pending
               ? `A ${label} FX command is pending. Shown settings are the last engine-acknowledged target.`
               : slot.transitioning
                 ? `${label} target accepted; the filter is transitioning. Its instantaneous DSP value is not shown.`
@@ -244,7 +245,7 @@ export function FxEditor({
             : 'Wait for input switching to finish before editing effects.'}
         </p>
       )}
-      {commands.error && <p role="alert">{commands.error}</p>}
+      {error && <p role="alert">{error}</p>}
       <details className="fx-explanation">
         <summary>About effects</summary>
         <p>

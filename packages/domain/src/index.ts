@@ -12,6 +12,7 @@ export type {
   AudioCommandSubmission,
   AudioEngineSnapshot,
   AudioHostSnapshot,
+  CaptureInterruptionSnapshot,
   AudioSnapshot,
   AudioStatus,
   TrackSnapshot,
