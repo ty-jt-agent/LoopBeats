@@ -59,6 +59,6 @@ jobs:
         run: |
           $env:VITE_WINDOWS_SHELL_SMOKE = 'true'
           npm run tauri:build
-      - name: Launch packaged shell and verify its UI error state
+      - name: Launch packaged shell and verify native host startup state
         shell: pwsh
         run: ./apps/windows/scripts/smoke.ps1

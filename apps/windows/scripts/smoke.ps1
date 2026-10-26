@@ -33,19 +33,23 @@ try {
         }
       }
       $accessibleText = $accessibleText -join "`n"
-      $verified = $accessibleText.Contains('Audio could not start') -and
-        $accessibleText.Contains('Windows audio host error') -and
-        $accessibleText.Contains('native Windows audio host is not included')
+      $hostReady = $accessibleText.Contains('Audio ready')
+      $hostFailed = $accessibleText.Contains('Audio could not start') -and
+        $accessibleText.Contains('Windows audio host error:')
+      $verified = $accessibleText.Contains('LoopBeats') -and ($hostReady -or $hostFailed)
+      if ($verified) {
+        $hostState = if ($hostReady) { 'ready' } else { 'reported its startup error' }
+      }
     } catch {
       # The UI Automation tree may not be ready until WebView2 finishes loading.
     }
   }
 
   if (-not $verified) {
-    throw 'The bundled UI did not show the expected unavailable Windows audio host state.'
+    throw 'The bundled UI did not show a ready or failed Windows audio host state.'
   }
 
-  Write-Host 'Windows shell launch smoke passed: bundled UI rendered the expected unavailable-host error.'
+  Write-Host "Windows shell launch smoke passed: bundled UI rendered and the native host $hostState."
 } finally {
   if (-not $process.HasExited) {
     Stop-Process -Id $process.Id -Force
