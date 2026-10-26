@@ -1,9 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AudioApplication,
+  AudioApplicationCommand,
   AudioApplicationSnapshot,
   AudioCapabilities,
+  AudioCommandOutcome,
   AudioCommandSubmission,
+  FxConfig,
+  FxScope,
 } from '@loopbeats/domain';
 
 const emptyTrack = () => ({
@@ -39,15 +43,17 @@ const emptySnapshot = (): AudioApplicationSnapshot => ({
 const unavailableCapabilities: AudioCapabilities = {
   inputDeviceSelection: false,
   outputDeviceSelection: false,
-  monitoring: false,
+  monitoring: true,
   gainUpdateCoalescing: false,
-  supportedFxScopes: [],
+  supportedFxScopes: [0, 3],
 };
 
 export class WindowsAudioApplication implements AudioApplication {
   private snapshot = emptySnapshot();
   private capabilities = unavailableCapabilities;
   private generation = 0;
+  private nextCommandId = 1;
+  private snapshotTimer: ReturnType<typeof setInterval> | undefined;
   private readonly listeners = new Set<() => void>();
 
   constructor() {
@@ -68,15 +74,57 @@ export class WindowsAudioApplication implements AudioApplication {
     return () => this.listeners.delete(listener);
   };
 
-  submit(): AudioCommandSubmission {
-    return { status: 'rejected', reason: 'unavailable' };
+  submit(command: AudioApplicationCommand): AudioCommandSubmission {
+    if (this.snapshot.host.status !== 'ready')
+      return { status: 'rejected', reason: 'unavailable' };
+    const commandId = this.nextCommandId++;
+    const generation = this.generation;
+    const outcome = invoke<AudioCommandOutcome>('audio_submit', { command })
+      .then((result) => {
+        this.generation = Math.max(this.generation, result.generation);
+        return { ...result, commandId, generation: result.generation };
+      })
+      .catch((error: unknown): AudioCommandOutcome => ({
+        commandId,
+        generation,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    return { status: 'accepted', commandId, generation, outcome };
+  }
+
+  setFx(scope: FxScope, config: FxConfig): void {
+    if (this.snapshot.host.status !== 'ready') return;
+    void invoke<AudioCommandOutcome>('audio_submit', {
+      command: { type: 'set-fx', scope, config },
+    })
+      .then(async (outcome) => {
+        if (outcome.status !== 'applied') {
+          this.setFxError(
+            scope,
+            outcome.error ??
+              'The native engine could not apply this FX target.',
+          );
+          return;
+        }
+        this.setFxError(scope, null);
+        await this.refreshSnapshot();
+      })
+      .catch((error: unknown) =>
+        this.setFxError(
+          scope,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
   }
 
   async start(): Promise<void> {
     this.setStatus('starting', null);
     try {
-      await invoke<void>('audio_host_start');
+      this.generation = await invoke<number>('audio_host_start');
       this.setStatus('ready', null);
+      this.startSnapshotPolling();
+      await this.refreshSnapshot();
     } catch (error) {
       this.fail(error);
     }
@@ -86,6 +134,7 @@ export class WindowsAudioApplication implements AudioApplication {
     this.setStatus('stopping', null);
     try {
       await invoke('audio_host_stop');
+      this.stopSnapshotPolling();
       this.generation += 1;
       this.snapshot = emptySnapshot();
       this.publish();
@@ -96,6 +145,43 @@ export class WindowsAudioApplication implements AudioApplication {
 
   reinitialize(): Promise<void> {
     return this.start();
+  }
+
+  private startSnapshotPolling() {
+    this.stopSnapshotPolling();
+    this.snapshotTimer = setInterval(() => void this.refreshSnapshot(), 50);
+  }
+
+  private stopSnapshotPolling() {
+    if (this.snapshotTimer !== undefined) clearInterval(this.snapshotTimer);
+    this.snapshotTimer = undefined;
+  }
+
+  private async refreshSnapshot() {
+    if (!['ready', 'interrupted'].includes(this.snapshot.host.status)) return;
+    try {
+      const snapshot = await invoke<
+        AudioApplicationSnapshot & { generation: number }
+      >('audio_snapshot');
+      this.generation = snapshot.generation;
+      this.snapshot = snapshot;
+      this.publish();
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private setFxError(scope: FxScope, error: string | null) {
+    const engine = { ...this.snapshot.engine };
+    if (scope === 0) engine.inputFxError = error;
+    else if (scope === 3) engine.masterFxError = error;
+    else {
+      const errors = [...(engine.playbackFxErrors ?? [null, null])];
+      errors[scope - 1] = error;
+      engine.playbackFxErrors = errors;
+    }
+    this.snapshot = { ...this.snapshot, engine };
+    this.publish();
   }
 
   private setStatus(

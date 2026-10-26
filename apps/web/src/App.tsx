@@ -11,6 +11,7 @@ import type {
   AudioApplication,
   AudioApplicationCommand,
   AudioSnapshot,
+  FxConfig,
   FxScope,
   TrackId,
 } from '@loopbeats/domain';
@@ -210,6 +211,20 @@ export function App({
   const getRecoverySnapshot = web?.getRecoverySnapshot ?? getNoRecoverySnapshot;
   const recovery = useSyncExternalStore(recoverySubscribe, getRecoverySnapshot);
   const capabilities = audio.getCapabilities();
+  const onFxConfigChange = useCallback(
+    (scope: FxScope, config: FxConfig) => {
+      if (web) {
+        if (scope === 0) web.setInputFx(config);
+        else web.setPlaybackFx(scope, config);
+        return;
+      }
+      const nativeAudio = audio as AudioApplication & {
+        setFx?: (scope: FxScope, config: FxConfig) => void;
+      };
+      nativeAudio.setFx?.(scope, config);
+    },
+    [audio, web],
+  );
   const [commandError, setCommandError] = useState('');
   const sendCommand = useCallback(
     (command: AudioApplicationCommand) => {
@@ -435,6 +450,9 @@ export function App({
     stopping: 'Stopping audio',
     error: 'Audio could not start',
   }[snapshot.status];
+  const captureInterruption = applicationSnapshot.host.captureInterruption;
+  const interruptedTrackNames = (trackIds: readonly number[]) =>
+    trackIds.map((trackId) => `Track ${trackId + 1}`).join(' and ');
   return (
     <main className={`shell${settingsOpen ? ' settings-open' : ''}`}>
       <div id="performance-shell" ref={performanceShell}>
@@ -469,6 +487,18 @@ export function App({
                 {recovery.error}
               </p>
               {snapshot.error && <p role="alert">{snapshot.error}</p>}
+              {snapshot.status === 'interrupted' && captureInterruption && (
+                <p role="alert" aria-live="assertive">
+                  Capture interrupted. Transport reset and monitoring turned
+                  off.{' '}
+                  {captureInterruption.initialRecordingDiscardedTracks.length >
+                    0 &&
+                    `${interruptedTrackNames(captureInterruption.initialRecordingDiscardedTracks)}'s unfinished recording was discarded. `}
+                  Completed recordings were retained.
+                  {captureInterruption.overdubMayBePartialTracks.length > 0 &&
+                    ` ${interruptedTrackNames(captureInterruption.overdubMayBePartialTracks)} overdub may be partial; additions already written were retained.`}
+                </p>
+              )}
               {commandError && <p role="alert">{commandError}</p>}
               <p className="session-guidance">
                 Use wired headphones. Monitoring starts off. Input FX:{' '}
@@ -536,7 +566,7 @@ export function App({
                     ? 'Disable monitoring'
                     : 'Enable monitoring'}
                 </button>
-                {web && (
+                {capabilities.supportedFxScopes.includes(0) && (
                   <FxScopeLauncher
                     scope={0}
                     slot={snapshot.fx?.[0]}
@@ -594,7 +624,7 @@ export function App({
                   />
                   <span>{Math.round(snapshot.masterGain * 100)}%</span>
                 </label>
-                {web && (
+                {capabilities.supportedFxScopes.includes(3) && (
                   <FxScopeLauncher
                     scope={3}
                     slot={snapshot.fx?.[3]}
@@ -624,9 +654,10 @@ export function App({
               </button>
             </section>
           </div>
-          {fxEditorOpen && web && (
+          {fxEditorOpen && (
             <FxEditor
-              client={web!}
+              onConfigChange={onFxConfigChange}
+              supportedScopes={capabilities.supportedFxScopes}
               snapshot={snapshot}
               enabled={ready && !switchPending}
               scope={fxEditorScope}
@@ -644,7 +675,9 @@ export function App({
                 sampleRate={snapshot.sampleRate}
                 cycleLengthSamples={snapshot.transport.cycleLengthSamples}
                 enabled={ready && !switchPending}
-                showFx={Boolean(web)}
+                showFx={capabilities.supportedFxScopes.includes(
+                  (index + 1) as FxScope,
+                )}
                 submit={sendCommand}
                 fx={snapshot.fx?.[index + 1]}
                 fxEditorScope={fxEditorOpen ? fxEditorScope : null}

@@ -40,6 +40,7 @@ pub struct TrackSnapshot {
 pub struct EngineSnapshot {
     pub fx: [FxSnapshot; 4],
     pub audio_failed: bool,
+    pub monitoring: bool,
     pub master_gain: f32,
     pub tracks: [TrackSnapshot; 2],
     pub transport_running: bool,
@@ -607,6 +608,7 @@ impl LoopEngine {
         EngineSnapshot {
             fx: std::array::from_fn(|i| self.fx[i].snapshot()),
             audio_failed: self.audio_failed,
+            monitoring: self.monitoring,
             master_gain: self.master_gain,
             tracks: std::array::from_fn(|index| {
                 let track = &self.tracks[index];
