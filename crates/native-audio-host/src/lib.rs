@@ -387,7 +387,18 @@ impl CommandAdapter {
         handed_off
     }
 
-    pub fn take_outcome(&self) -> Option<CommandOutcome> {
+    pub fn take_outcome(&mut self) -> Option<CommandOutcome> {
+        if !self.shared.active.load(Ordering::Acquire) {
+            while let Some(envelope) = self.staging.pop_front() {
+                publish_outcome(
+                    &self.shared.outcomes,
+                    CommandOutcome::Stale {
+                        command_id: envelope.accepted.command_id,
+                        generation: envelope.accepted.generation,
+                    },
+                );
+            }
+        }
         let outcome = self.shared.outcomes.pop()?;
         self.shared.outstanding.fetch_sub(1, Ordering::AcqRel);
         Some(outcome)

@@ -105,15 +105,17 @@ impl MonitoringHost {
         let render_thread = match thread::Builder::new()
             .name("loopbeats-wasapi-render-engine".into())
             .spawn(move || {
+                let mut processor = processor;
                 let result = run_render(
                     &render_id,
-                    processor,
+                    &mut processor,
                     render_input,
                     render_signals,
                     render_stop,
                     &render_tx,
                 );
                 if let Err(error) = result {
+                    settle_runtime_failure(&mut processor);
                     render_failure_signals.mark_device_failed();
                     render_failure_signals.render_failure();
                     render_failure_stop.store(true, Ordering::Release);
@@ -334,7 +336,7 @@ fn run_capture(
 
 fn run_render(
     endpoint_id: &str,
-    mut processor: Processor,
+    processor: &mut Processor,
     input: Arc<ArrayQueue<f32>>,
     signals: Arc<HostSignals>,
     stop: Arc<AtomicBool>,
@@ -394,7 +396,13 @@ fn run_render(
     if ready.send(Ok(diagnostics)).is_err() {
         return Ok(());
     }
-    while !stop.load(Ordering::Acquire) {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            if signals.device_failed() {
+                settle_runtime_failure(processor);
+            }
+            break;
+        }
         match wait_for_event(&event) {
             Ok(true) => {}
             Ok(false) => continue,
@@ -408,7 +416,8 @@ fn run_render(
             return Err(HostError::UnsupportedFormat);
         }
         if signals.device_failed() {
-            processor.process_block(&[], &mut output[..available], HostEvent::DeviceFailed);
+            settle_runtime_failure(processor);
+            output[..available].fill(0.0);
             signals.render_failure();
             break;
         }
