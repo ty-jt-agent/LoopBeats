@@ -4,6 +4,7 @@
 //! transferred between those threads through a fixed-capacity queue; it never
 //! crosses the UI boundary.
 
+use loop_engine::TrackState;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(any(windows, test))]
 use std::sync::Arc;
@@ -152,6 +153,8 @@ pub struct HostDiagnostics {
     pub render_failures: u64,
     pub device_failed: bool,
     pub capture_queue_frames: usize,
+    pub last_capture_discontinuity: Option<CaptureDiscontinuityReason>,
+    pub last_capture_impact: Option<CaptureLossImpact>,
 }
 
 impl HostDiagnostics {
@@ -162,6 +165,8 @@ impl HostDiagnostics {
         counters: (u64, u64, u64),
         device_failed: bool,
         capture_queue_frames: usize,
+        last_capture_discontinuity: Option<CaptureDiscontinuityReason>,
+        last_capture_impact: Option<CaptureLossImpact>,
     ) -> Self {
         Self {
             capture,
@@ -171,7 +176,82 @@ impl HostDiagnostics {
             render_failures: counters.2,
             device_failed,
             capture_queue_frames,
+            last_capture_discontinuity,
+            last_capture_impact,
         }
+    }
+}
+
+/// The latest confirmed reason capture continuity was lost. Audio workers store
+/// it atomically; callers read it through host diagnostics outside callbacks.
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureDiscontinuityReason {
+    WasapiReported = 0,
+    CapturePacketGap = 1,
+    CaptureQueueOverflow = 2,
+    RenderInputUnderflow = 3,
+}
+
+/// The session-level effect of a confirmed capture discontinuity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureLossImpact {
+    PlaybackContinued,
+    InitialRecordingDiscarded { track_id: usize },
+    OverdubMayBePartial { track_id: usize },
+}
+
+pub fn capture_loss_impact(states: [TrackState; 2]) -> CaptureLossImpact {
+    for (track_id, state) in states.into_iter().enumerate() {
+        match state {
+            TrackState::Recording => {
+                return CaptureLossImpact::InitialRecordingDiscarded { track_id };
+            }
+            TrackState::Overdubbing => {
+                return CaptureLossImpact::OverdubMayBePartial { track_id };
+            }
+            TrackState::Empty | TrackState::Playing | TrackState::Stopped => {}
+        }
+    }
+    CaptureLossImpact::PlaybackContinued
+}
+
+fn encode_capture_loss_impact(impact: CaptureLossImpact) -> u64 {
+    match impact {
+        CaptureLossImpact::PlaybackContinued => 1,
+        CaptureLossImpact::InitialRecordingDiscarded { track_id: 0 } => 2,
+        CaptureLossImpact::InitialRecordingDiscarded { track_id: 1 } => 3,
+        CaptureLossImpact::OverdubMayBePartial { track_id: 0 } => 4,
+        CaptureLossImpact::OverdubMayBePartial { track_id: 1 } => 5,
+        CaptureLossImpact::InitialRecordingDiscarded { .. }
+        | CaptureLossImpact::OverdubMayBePartial { .. } => 0,
+    }
+}
+
+fn decode_capture_loss_impact(encoded: u64) -> Option<CaptureLossImpact> {
+    match encoded {
+        1 => Some(CaptureLossImpact::PlaybackContinued),
+        2 => Some(CaptureLossImpact::InitialRecordingDiscarded { track_id: 0 }),
+        3 => Some(CaptureLossImpact::InitialRecordingDiscarded { track_id: 1 }),
+        4 => Some(CaptureLossImpact::OverdubMayBePartial { track_id: 0 }),
+        5 => Some(CaptureLossImpact::OverdubMayBePartial { track_id: 1 }),
+        _ => None,
+    }
+}
+
+/// Classify only loss evidence reported by WASAPI or a discontinuous packet
+/// position. Callback timing and queue occupancy are deliberately not inputs.
+pub fn capture_packet_discontinuity(
+    wasapi_reported: bool,
+    prior_packet_end: Option<u64>,
+    packet_index: u64,
+) -> Option<CaptureDiscontinuityReason> {
+    if wasapi_reported {
+        Some(CaptureDiscontinuityReason::WasapiReported)
+    } else if prior_packet_end.is_some_and(|expected| expected != packet_index) {
+        Some(CaptureDiscontinuityReason::CapturePacketGap)
+    } else {
+        None
     }
 }
 
@@ -223,21 +303,25 @@ pub struct HostSignals {
     render_failures: AtomicU64,
     capture_loss_pending: AtomicBool,
     device_failed: AtomicBool,
+    last_capture_discontinuity: AtomicU64,
+    last_capture_impact: AtomicU64,
 }
 
 impl HostSignals {
-    pub fn capture_discontinuity(&self) {
-        self.count_capture_discontinuity();
+    pub fn capture_discontinuity(&self, reason: CaptureDiscontinuityReason) {
+        self.record_capture_discontinuity(reason);
         self.capture_loss_pending.store(true, Ordering::Release);
     }
 
-    pub fn count_capture_discontinuity(&self) {
+    pub fn record_capture_discontinuity(&self, reason: CaptureDiscontinuityReason) {
         self.capture_discontinuities.fetch_add(1, Ordering::Relaxed);
+        self.last_capture_discontinuity
+            .store(reason as u64 + 1, Ordering::Release);
     }
 
     pub fn capture_overflow(&self) {
         self.capture_overflows.fetch_add(1, Ordering::Relaxed);
-        self.capture_discontinuity();
+        self.capture_discontinuity(CaptureDiscontinuityReason::CaptureQueueOverflow);
     }
 
     pub fn render_failure(&self) {
@@ -262,6 +346,25 @@ impl HostSignals {
             self.capture_overflows.load(Ordering::Acquire),
             self.render_failures.load(Ordering::Acquire),
         )
+    }
+
+    pub fn last_capture_discontinuity(&self) -> Option<CaptureDiscontinuityReason> {
+        match self.last_capture_discontinuity.load(Ordering::Acquire) {
+            1 => Some(CaptureDiscontinuityReason::WasapiReported),
+            2 => Some(CaptureDiscontinuityReason::CapturePacketGap),
+            3 => Some(CaptureDiscontinuityReason::CaptureQueueOverflow),
+            4 => Some(CaptureDiscontinuityReason::RenderInputUnderflow),
+            _ => None,
+        }
+    }
+
+    pub fn record_capture_impact(&self, impact: CaptureLossImpact) {
+        self.last_capture_impact
+            .store(encode_capture_loss_impact(impact), Ordering::Release);
+    }
+
+    pub fn last_capture_impact(&self) -> Option<CaptureLossImpact> {
+        decode_capture_loss_impact(self.last_capture_impact.load(Ordering::Acquire))
     }
 }
 
@@ -396,6 +499,53 @@ mod tests {
         let signals = HostSignals::default();
         signals.capture_overflow();
         assert_eq!(signals.counters(), (1, 1, 0));
+        assert_eq!(
+            signals.last_capture_discontinuity(),
+            Some(CaptureDiscontinuityReason::CaptureQueueOverflow)
+        );
+    }
+
+    #[test]
+    fn packet_continuity_uses_loss_evidence_not_callback_timing_or_occupancy() {
+        assert_eq!(capture_packet_discontinuity(false, None, 12), None);
+        assert_eq!(capture_packet_discontinuity(false, Some(12), 12), None);
+        assert_eq!(
+            capture_packet_discontinuity(false, Some(12), 15),
+            Some(CaptureDiscontinuityReason::CapturePacketGap)
+        );
+        assert_eq!(
+            capture_packet_discontinuity(true, Some(12), 12),
+            Some(CaptureDiscontinuityReason::WasapiReported)
+        );
+        let signals = HostSignals::default();
+        assert!(!signals.take_capture_loss());
+        assert_eq!(signals.last_capture_discontinuity(), None);
+    }
+
+    #[test]
+    fn capture_loss_diagnostics_preserve_recording_discard_and_partial_overdub_labels() {
+        let impacts = [
+            (
+                [TrackState::Recording, TrackState::Playing],
+                CaptureLossImpact::InitialRecordingDiscarded { track_id: 0 },
+            ),
+            (
+                [TrackState::Stopped, TrackState::Overdubbing],
+                CaptureLossImpact::OverdubMayBePartial { track_id: 1 },
+            ),
+            (
+                [TrackState::Playing, TrackState::Stopped],
+                CaptureLossImpact::PlaybackContinued,
+            ),
+        ];
+
+        let signals = HostSignals::default();
+        assert_eq!(signals.last_capture_impact(), None);
+        for (states, expected) in impacts {
+            assert_eq!(capture_loss_impact(states), expected);
+            signals.record_capture_impact(expected);
+            assert_eq!(signals.last_capture_impact(), Some(expected));
+        }
     }
 
     #[test]
