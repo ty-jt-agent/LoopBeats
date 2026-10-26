@@ -51,4 +51,6 @@ not measure complete microphone-to-output latency.
 - Provide complete mic-to-output measurement evidence, or state the specific
   measurement limitation if no calibrated acoustic setup is available.
 
-H01 remains partial pending those observations. Do not mark this run as a pass.
+The owner has deferred completing H01 until the integrated Windows audio product
+is ready. This run remains partial evidence and is not a pass; the observations
+above still need to be recorded in the final hardware acceptance run.

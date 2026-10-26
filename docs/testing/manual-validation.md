@@ -23,7 +23,7 @@ At #19, map all 50 parent stories to automated or manual evidence. These combine
 
 ## Windows native audio prototype (#97)
 
-The first matched-endpoint native proof is an early hardware checkpoint before broader Windows UI integration. Use the standalone [`windows-audio-host` monitor harness](../../crates/windows-audio-host/README.md) and the measurement method and required evidence fields in [windows-native.md](../architecture/windows-native.md#owner-supplied-hardware-evidence). This is separate from #19's later integrated product acceptance.
+Owner decision: defer completion of H01 until the integrated Windows audio product is ready. This case does not block intermediate implementation or code merges; it remains required before claiming Windows hardware acceptance. Use the standalone [`windows-audio-host` monitor harness](../../crates/windows-audio-host/README.md) and the measurement method and required evidence fields in [windows-native.md](../architecture/windows-native.md#owner-supplied-hardware-evidence).
 
 | ID | Combined case and expected outcome | Origin / affected features |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ The first matched-endpoint native proof is an early hardware checkpoint before b
 
 | Case ID | Result | Evidence / limitation |
 | --- | --- | --- |
-| H01 | Partial | [Owner-reported run](run-2026-10-26-windows-native-97.md) covers NZXT USB MIC to Realtek output: both at 48 kHz, 480-frame periods, no fallback; one additional discontinuity was counted. Duration, listening outcome, driver versions and complete latency evidence or its limitation are pending. |
+| H01 | Deferred | [Partial owner-reported run](run-2026-10-26-windows-native-97.md) covers NZXT USB MIC to Realtek output: both at 48 kHz, 480-frame periods, no fallback; one additional discontinuity was counted. Complete H01 validation is deferred until the integrated Windows audio product is ready. Duration, listening outcome, driver versions and complete latency evidence or its limitation remain pending; do not mark H01 passed. |
 
 ## Existing evidence and deferred work
 
