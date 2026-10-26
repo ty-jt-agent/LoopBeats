@@ -120,6 +120,8 @@ impl MonitoringHost {
                     render_failure_signals.render_failure();
                     render_failure_stop.store(true, Ordering::Release);
                     eprintln!("WASAPI render stopped: {error}");
+                } else if render_failure_signals.device_failed() {
+                    processor.settle_pending_after_failure();
                 }
             }) {
             Ok(thread) => thread,
@@ -399,7 +401,7 @@ fn run_render(
     loop {
         if stop.load(Ordering::Acquire) {
             if signals.device_failed() {
-                settle_runtime_failure(processor);
+                process_runtime_failure(processor);
             }
             break;
         }
@@ -416,9 +418,7 @@ fn run_render(
             return Err(HostError::UnsupportedFormat);
         }
         if signals.device_failed() {
-            settle_runtime_failure(processor);
-            output[..available].fill(0.0);
-            signals.render_failure();
+            process_runtime_failure(processor);
             break;
         }
         let mut missing_input = false;

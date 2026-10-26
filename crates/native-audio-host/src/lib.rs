@@ -13,7 +13,8 @@ pub const DEFAULT_COMMAND_CAPACITY: usize = 64;
 pub const DEFAULT_ACK_CAPACITY: usize = 128;
 pub const DEFAULT_BLOCK_BUDGET: usize = 16;
 const PUBLISHERS_CLOSED: usize = 1 << (usize::BITS - 1);
-const PUBLISHER_COUNT_MASK: usize = PUBLISHERS_CLOSED - 1;
+const PUBLISHER_CLEANUP_REQUIRED: usize = PUBLISHERS_CLOSED >> 1;
+const PUBLISHER_COUNT_MASK: usize = PUBLISHER_CLEANUP_REQUIRED - 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AudioCommand {
@@ -177,9 +178,10 @@ impl Processor {
 
         match event {
             HostEvent::DeviceFailed => {
-                self.shared
-                    .publisher_state
-                    .fetch_or(PUBLISHERS_CLOSED, Ordering::AcqRel);
+                self.shared.publisher_state.fetch_or(
+                    PUBLISHERS_CLOSED | PUBLISHER_CLEANUP_REQUIRED,
+                    Ordering::AcqRel,
+                );
                 self.shared.active.store(false, Ordering::Release);
                 self.observed_generation = self
                     .shared
@@ -283,6 +285,9 @@ impl Processor {
             std::hint::spin_loop();
         }
         self.invalidate_queued_commands();
+        self.shared
+            .publisher_state
+            .fetch_and(!PUBLISHER_CLEANUP_REQUIRED, Ordering::Release);
     }
 
     fn apply(&mut self, command: AudioCommand) {
@@ -450,9 +455,27 @@ impl CommandAdapter {
     }
 
     pub fn restart(&mut self) {
-        self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        self.shared.publisher_state.store(0, Ordering::Release);
-        self.shared.active.store(true, Ordering::Release);
+        self.shared
+            .publisher_state
+            .fetch_or(PUBLISHERS_CLOSED, Ordering::AcqRel);
+        loop {
+            let state = self.shared.publisher_state.load(Ordering::Acquire);
+            if state & (PUBLISHER_CLEANUP_REQUIRED | PUBLISHER_COUNT_MASK) == 0 {
+                self.shared.generation.fetch_add(1, Ordering::AcqRel);
+                self.shared.active.store(true, Ordering::Release);
+                if self
+                    .shared
+                    .publisher_state
+                    .compare_exchange(PUBLISHERS_CLOSED, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return;
+                }
+                self.shared.active.store(false, Ordering::Release);
+            } else {
+                std::hint::spin_loop();
+            }
+        }
     }
 
     fn settle_staged_commands(&mut self) {

@@ -379,6 +379,7 @@ fn host_fault_invalidates_old_generation_before_applying_ui_commands() {
         adapter.submit(AudioCommand::SetMonitoring(true)),
         Err(RejectReason::Unavailable)
     );
+    processor.settle_pending_after_failure();
     adapter.restart();
     let current = adapter.submit(AudioCommand::SetMonitoring(true)).unwrap();
     adapter.flush(8);
