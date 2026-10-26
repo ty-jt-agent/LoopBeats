@@ -2,7 +2,7 @@ use super::*;
 use crossbeam_queue::ArrayQueue;
 use loop_engine::TrackState;
 use native_audio_host::{CommandAdapter, HostEvent, Processor};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 use wasapi::{
@@ -78,6 +78,8 @@ impl MonitoringHost {
         let capture_failure_signals = Arc::clone(&signals);
         let capture_failure_stop = Arc::clone(&stop);
         let capture_input = Arc::clone(&input);
+        let capture_packet_frames = Arc::new(AtomicUsize::new(0));
+        let capture_packet_frames_worker = Arc::clone(&capture_packet_frames);
         let capture_tx = ready.0.clone();
         let capture_thread = thread::Builder::new()
             .name("loopbeats-wasapi-capture".into())
@@ -85,6 +87,7 @@ impl MonitoringHost {
                 let result = run_capture(
                     &capture_id,
                     capture_input,
+                    capture_packet_frames_worker,
                     capture_signals,
                     capture_stop,
                     &capture_tx,
@@ -105,6 +108,7 @@ impl MonitoringHost {
         let render_input = Arc::clone(&input);
         let clock_correction_ppm = Arc::new(AtomicI32::new(0));
         let render_clock_correction = Arc::clone(&clock_correction_ppm);
+        let render_capture_packet_frames = Arc::clone(&capture_packet_frames);
         let render_tx = ready.0.clone();
         let render_thread = match thread::Builder::new()
             .name("loopbeats-wasapi-render-engine".into())
@@ -116,6 +120,7 @@ impl MonitoringHost {
                     &mut processor,
                     render_input,
                     render_clock_correction,
+                    render_capture_packet_frames,
                     render_signals,
                     render_stop,
                     &render_tx,
@@ -245,6 +250,7 @@ fn resolve_endpoints(config: &HostConfig) -> Result<(String, String, u32, u32), 
 fn run_capture(
     endpoint_id: &str,
     samples: Arc<ArrayQueue<f32>>,
+    capture_packet_frames: Arc<AtomicUsize>,
     signals: Arc<HostSignals>,
     stop: Arc<AtomicBool>,
     ready: &std::sync::mpsc::SyncSender<Result<StreamDiagnostics, HostError>>,
@@ -276,9 +282,17 @@ fn run_capture(
             buffer_frames,
             StreamDirection::Capture,
         );
-        Ok::<_, HostError>((client, event, capture, format, buffer_frames, diagnostics))
+        Ok::<_, HostError>((
+            client,
+            event,
+            capture,
+            format,
+            buffer_frames,
+            period.1,
+            diagnostics,
+        ))
     })();
-    let (client, event, capture, format, buffer_frames, diagnostics) = match setup {
+    let (client, event, capture, format, buffer_frames, period_frames, diagnostics) = match setup {
         Ok(setup) => setup,
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
@@ -288,6 +302,7 @@ fn run_capture(
     let channels = format.get_nchannels() as usize;
     let bytes_per_frame = format.get_blockalign() as usize;
     let mut raw = vec![0_u8; buffer_frames.max(1) * bytes_per_frame];
+    capture_packet_frames.store(period_frames as usize, Ordering::Release);
     if let Err(error) = client.start_stream().map_err(map_error) {
         let _ = ready.send(Err(error.clone()));
         return Err(error);
@@ -349,6 +364,7 @@ fn run_render(
     processor: &mut Processor,
     input: Arc<ArrayQueue<f32>>,
     clock_correction_ppm: Arc<AtomicI32>,
+    capture_packet_frames: Arc<AtomicUsize>,
     signals: Arc<HostSignals>,
     stop: Arc<AtomicBool>,
     ready: &std::sync::mpsc::SyncSender<Result<StreamDiagnostics, HostError>>,
@@ -404,9 +420,28 @@ fn run_render(
     let mut raw = vec![0_u8; buffer_frames.max(1) * bytes_per_frame];
     let mut capture_resampler = CaptureResampler::new(capture_rate, format.get_samplespersec())?;
     let render_rate = format.get_samplespersec() as u64;
-    let target_capture_frames = ((period.1 as u64 * capture_rate as u64 * 2).div_ceil(render_rate)
-        as usize)
+    let capture_packet_frames = loop {
+        let frames = capture_packet_frames.load(Ordering::Acquire);
+        if frames > 0 {
+            break frames;
+        }
+        if stop.load(Ordering::Acquire) {
+            let error = HostError::Initialization(InitializationFailure::Other);
+            let _ = ready.send(Err(error.clone()));
+            return Err(error);
+        }
+        thread::yield_now();
+    };
+    let render_prefill_frames =
+        (period.1 as u64 * capture_rate as u64 * 2).div_ceil(render_rate) as usize;
+    let target_capture_frames = capture_packet_frames
+        .saturating_add(render_prefill_frames)
         .clamp(2, CAPTURE_QUEUE_FRAMES - 1);
+    if target_capture_frames.saturating_add(capture_packet_frames) > CAPTURE_QUEUE_FRAMES {
+        let error = HostError::InvalidConfiguration;
+        let _ = ready.send(Err(error.clone()));
+        return Err(error);
+    }
     let mut clock_controller = CaptureClockController::new(target_capture_frames);
     // Let capture prime the bounded FIFO before opening the render clock. This
     // avoids treating the expected startup fill interval as a capture gap.
@@ -448,8 +483,12 @@ fn run_render(
             processor.snapshot().tracks.iter().any(|track| {
                 matches!(track.state, TrackState::Recording | TrackState::Overdubbing)
             });
-        let stale_frames_discarded =
-            recover_capture_backlog(&input, target_capture_frames, capture_active);
+        let stale_frames_discarded = recover_capture_backlog(
+            &input,
+            target_capture_frames,
+            capture_packet_frames,
+            capture_active,
+        );
         if stale_frames_discarded > 0 {
             capture_resampler.reset();
             signals.count_capture_discontinuity();
