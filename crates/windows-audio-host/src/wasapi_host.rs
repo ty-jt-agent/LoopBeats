@@ -1,7 +1,8 @@
 use super::*;
 use crossbeam_queue::ArrayQueue;
+use loop_engine::TrackState;
 use native_audio_host::{CommandAdapter, HostEvent, Processor};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::thread;
 use std::time::Duration;
 use wasapi::{
@@ -53,11 +54,12 @@ pub struct MonitoringHost {
     render_diagnostics: StreamDiagnostics,
     workers: WorkerGroup,
     input: Arc<ArrayQueue<f32>>,
+    clock_correction_ppm: Arc<AtomicI32>,
 }
 
 impl MonitoringHost {
     pub fn start(config: HostConfig) -> Result<Self, HostError> {
-        let (capture_id, render_id, render_rate) = resolve_endpoints(&config)?;
+        let (capture_id, render_id, capture_rate, render_rate) = resolve_endpoints(&config)?;
         let capacity = config
             .engine_capacity_frames
             .unwrap_or(render_rate as usize * 60);
@@ -101,6 +103,8 @@ impl MonitoringHost {
         let render_failure_signals = Arc::clone(&signals);
         let render_failure_stop = Arc::clone(&stop);
         let render_input = Arc::clone(&input);
+        let clock_correction_ppm = Arc::new(AtomicI32::new(0));
+        let render_clock_correction = Arc::clone(&clock_correction_ppm);
         let render_tx = ready.0.clone();
         let render_thread = match thread::Builder::new()
             .name("loopbeats-wasapi-render-engine".into())
@@ -108,8 +112,10 @@ impl MonitoringHost {
                 let mut processor = processor;
                 let result = run_render(
                     &render_id,
+                    capture_rate,
                     &mut processor,
                     render_input,
+                    render_clock_correction,
                     render_signals,
                     render_stop,
                     &render_tx,
@@ -164,6 +170,7 @@ impl MonitoringHost {
                 .clone(),
             workers,
             input,
+            clock_correction_ppm,
         })
     }
 
@@ -182,6 +189,8 @@ impl MonitoringHost {
             self.signals.last_capture_discontinuity(),
             self.signals.last_capture_impact(),
             self.signals.pending_capture_interruption(),
+            CAPTURE_QUEUE_FRAMES,
+            self.clock_correction_ppm.load(Ordering::Acquire),
         )
     }
 }
@@ -193,7 +202,7 @@ impl Drop for MonitoringHost {
     }
 }
 
-fn resolve_endpoints(config: &HostConfig) -> Result<(String, String, u32), HostError> {
+fn resolve_endpoints(config: &HostConfig) -> Result<(String, String, u32, u32), HostError> {
     let _com = ComApartment::enter()?;
     let resolved = (|| {
         let enumerator = DeviceEnumerator::new().map_err(map_error)?;
@@ -230,13 +239,7 @@ fn resolve_endpoints(config: &HostConfig) -> Result<(String, String, u32), HostE
         ))
     })();
     let (capture_id, render_id, capture_rate, render_rate) = resolved?;
-    if capture_rate != render_rate {
-        return Err(HostError::SampleRateMismatch {
-            capture: capture_rate,
-            render: render_rate,
-        });
-    }
-    Ok((capture_id, render_id, render_rate))
+    Ok((capture_id, render_id, capture_rate, render_rate))
 }
 
 fn run_capture(
@@ -342,8 +345,10 @@ fn run_capture(
 
 fn run_render(
     endpoint_id: &str,
+    capture_rate: u32,
     processor: &mut Processor,
     input: Arc<ArrayQueue<f32>>,
+    clock_correction_ppm: Arc<AtomicI32>,
     signals: Arc<HostSignals>,
     stop: Arc<AtomicBool>,
     ready: &std::sync::mpsc::SyncSender<Result<StreamDiagnostics, HostError>>,
@@ -375,9 +380,17 @@ fn run_render(
             buffer_frames,
             StreamDirection::Render,
         );
-        Ok::<_, HostError>((client, event, render, format, buffer_frames, diagnostics))
+        Ok::<_, HostError>((
+            client,
+            event,
+            render,
+            format,
+            period,
+            buffer_frames,
+            diagnostics,
+        ))
     })();
-    let (client, event, render, format, buffer_frames, diagnostics) = match setup {
+    let (client, event, render, format, period, buffer_frames, diagnostics) = match setup {
         Ok(setup) => setup,
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
@@ -389,9 +402,15 @@ fn run_render(
     let mut frames = vec![0.0_f32; buffer_frames.max(1)];
     let mut output = vec![0.0_f32; buffer_frames.max(1)];
     let mut raw = vec![0_u8; buffer_frames.max(1) * bytes_per_frame];
+    let mut capture_resampler = CaptureResampler::new(capture_rate, format.get_samplespersec())?;
+    let render_rate = format.get_samplespersec() as u64;
+    let target_capture_frames = ((period.1 as u64 * capture_rate as u64 * 2).div_ceil(render_rate)
+        as usize)
+        .clamp(2, CAPTURE_QUEUE_FRAMES - 1);
+    let mut clock_controller = CaptureClockController::new(target_capture_frames);
     // Let capture prime the bounded FIFO before opening the render clock. This
     // avoids treating the expected startup fill interval as a capture gap.
-    while !stop.load(Ordering::Acquire) && input.len() < buffer_frames {
+    while !stop.load(Ordering::Acquire) && input.len() < target_capture_frames {
         thread::yield_now();
     }
     if let Err(error) = client.start_stream().map_err(map_error) {
@@ -425,18 +444,29 @@ fn run_render(
             process_runtime_failure(processor);
             break;
         }
+        let capture_active =
+            processor.snapshot().tracks.iter().any(|track| {
+                matches!(track.state, TrackState::Recording | TrackState::Overdubbing)
+            });
+        let stale_frames_discarded =
+            recover_capture_backlog(&input, target_capture_frames, capture_active);
+        if stale_frames_discarded > 0 {
+            capture_resampler.reset();
+            signals.count_capture_discontinuity();
+        }
+        let correction = clock_controller.update_for_block(input.len(), available);
+        clock_correction_ppm.store(clock_controller.correction_ppm(), Ordering::Release);
         let mut missing_input = false;
         for sample in &mut frames[..available] {
-            *sample = input.pop().unwrap_or_else(|| {
-                missing_input = true;
-                0.0
-            });
+            let (resampled, missing) = capture_resampler.next_sample(&input, correction);
+            *sample = if missing { 0.0 } else { resampled };
+            missing_input |= missing;
         }
         let was_signaled_lost = signals.take_capture_loss();
         if missing_input && !was_signaled_lost {
             signals.record_capture_discontinuity(CaptureDiscontinuityReason::RenderInputUnderflow);
         }
-        let event_kind = if missing_input || was_signaled_lost {
+        let event_kind = if missing_input || was_signaled_lost || stale_frames_discarded > 0 {
             HostEvent::CaptureLost
         } else {
             HostEvent::None
@@ -582,6 +612,8 @@ fn make_diagnostics(
     buffer_frames: usize,
     direction: StreamDirection,
 ) -> StreamDiagnostics {
+    let sample_format =
+        stream_sample_format(format).expect("stream format was validated before diagnostics");
     StreamDiagnostics {
         direction,
         endpoint_id: device.get_id().unwrap_or_else(|_| "unavailable".into()),
@@ -597,6 +629,8 @@ fn make_diagnostics(
         },
         requested_sample_rate: format.get_samplespersec(),
         actual_sample_rate: format.get_samplespersec(),
+        channel_count: format.get_nchannels(),
+        sample_format,
         requested_period_frames: period.0,
         actual_period_frames: period.1,
         buffer_frames: buffer_frames as u32,
@@ -638,19 +672,25 @@ fn classify_wasapi_error(error: &wasapi::WasapiError) -> InitializationFailure {
 
 fn validate_format(format: &WaveFormat) -> Result<(), HostError> {
     let bits = format.get_bitspersample();
-    let format_supported = match format.get_subformat() {
-        Ok(SampleType::Float) => bits == 32,
-        Ok(SampleType::Int) => matches!(bits, 16 | 24 | 32),
-        Err(_) => false,
-    };
-    if !format_supported
+    if stream_sample_format(format).is_none()
         || format.get_validbitspersample() != bits
+        || format.get_samplespersec() == 0
         || format.get_nchannels() == 0
         || format.get_blockalign() as usize != format.get_nchannels() as usize * (bits as usize / 8)
     {
         return Err(HostError::UnsupportedFormat);
     }
     Ok(())
+}
+
+fn stream_sample_format(format: &WaveFormat) -> Option<StreamSampleFormat> {
+    match (format.get_subformat().ok()?, format.get_bitspersample()) {
+        (SampleType::Float, 32) => Some(StreamSampleFormat::Float32),
+        (SampleType::Int, 16) => Some(StreamSampleFormat::Signed16),
+        (SampleType::Int, 24) => Some(StreamSampleFormat::Signed24),
+        (SampleType::Int, 32) => Some(StreamSampleFormat::Signed32),
+        _ => None,
+    }
 }
 
 fn push_input(queue: &ArrayQueue<f32>, sample: f32) -> bool {

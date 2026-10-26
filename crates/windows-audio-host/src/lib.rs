@@ -49,10 +49,20 @@ pub struct StreamDiagnostics {
     pub driver: DriverDiagnostic,
     pub requested_sample_rate: u32,
     pub actual_sample_rate: u32,
+    pub channel_count: u16,
+    pub sample_format: StreamSampleFormat,
     pub requested_period_frames: u32,
     pub actual_period_frames: u32,
     pub buffer_frames: u32,
     pub fallback: Option<FallbackReason>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamSampleFormat {
+    Float32,
+    Signed16,
+    Signed24,
+    Signed32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,6 +166,8 @@ pub struct HostDiagnostics {
     pub last_capture_discontinuity: Option<CaptureDiscontinuityReason>,
     pub last_capture_impact: Option<CaptureLossImpact>,
     pub pending_capture_interruption: CaptureInterruptionNotices,
+    pub capture_queue_capacity_frames: usize,
+    pub capture_resampling_correction_ppm: i32,
 }
 
 impl HostDiagnostics {
@@ -169,6 +181,8 @@ impl HostDiagnostics {
         last_capture_discontinuity: Option<CaptureDiscontinuityReason>,
         last_capture_impact: Option<CaptureLossImpact>,
         pending_capture_interruption: CaptureInterruptionNotices,
+        capture_queue_capacity_frames: usize,
+        capture_resampling_correction_ppm: i32,
     ) -> Self {
         Self {
             capture,
@@ -181,6 +195,8 @@ impl HostDiagnostics {
             last_capture_discontinuity,
             last_capture_impact,
             pending_capture_interruption,
+            capture_queue_capacity_frames,
+            capture_resampling_correction_ppm,
         }
     }
 }
@@ -272,6 +288,142 @@ pub fn capture_packet_discontinuity(
         Some(CaptureDiscontinuityReason::CapturePacketGap)
     } else {
         None
+    }
+}
+
+/// Slowly adjusts capture consumption to hold a bounded FIFO near its target.
+/// The correction is diagnostic state and never represents confirmed data loss.
+#[derive(Clone, Debug)]
+pub struct CaptureClockController {
+    target_frames: usize,
+    integral: f64,
+    correction: f64,
+}
+
+impl CaptureClockController {
+    pub fn new(target_frames: usize) -> Self {
+        Self {
+            target_frames: target_frames.max(1),
+            integral: 0.0,
+            correction: 0.0,
+        }
+    }
+
+    /// Update once per render block. `correction` is bounded to ±5000 ppm.
+    /// Scale the integral term by render block size so different host period
+    /// choices do not change controller strength per unit of audio time.
+    pub fn update_for_block(&mut self, occupancy_frames: usize, block_frames: usize) -> f64 {
+        let error = occupancy_frames as f64 - self.target_frames as f64;
+        let block_scale = block_frames.max(1) as f64 / 128.0;
+        self.integral = (self.integral + error * 0.000_000_01 * block_scale).clamp(-0.0025, 0.0025);
+        self.correction = (error * 0.000_000_5 + self.integral).clamp(-0.005, 0.005);
+        self.correction
+    }
+
+    pub fn correction_ppm(&self) -> i32 {
+        (self.correction * 1_000_000.0).round() as i32
+    }
+}
+
+/// Linear, bounded-FIFO resampler for converting capture-clock samples to the
+/// render/engine clock. The render worker owns this state and the FIFO consumer.
+pub struct CaptureResampler {
+    current: f32,
+    next: f32,
+    phase: f64,
+    source_per_output: f64,
+    primed: bool,
+}
+
+impl CaptureResampler {
+    pub fn new(source_rate: u32, output_rate: u32) -> Result<Self, HostError> {
+        if source_rate == 0 || output_rate == 0 {
+            return Err(HostError::UnsupportedFormat);
+        }
+        Ok(Self {
+            current: 0.0,
+            next: 0.0,
+            phase: 0.0,
+            source_per_output: source_rate as f64 / output_rate as f64,
+            primed: false,
+        })
+    }
+
+    /// Produces silence until two source samples are available. An underflow is
+    /// reported to the caller, which applies the existing capture-loss policy.
+    pub fn next_sample(
+        &mut self,
+        queue: &crossbeam_queue::ArrayQueue<f32>,
+        correction: f64,
+    ) -> (f32, bool) {
+        let correction = if correction.is_finite() {
+            correction.clamp(-0.005, 0.005)
+        } else {
+            0.0
+        };
+        if !self.primed {
+            let Some(current) = queue.pop() else {
+                return (0.0, true);
+            };
+            let Some(next) = queue.pop() else {
+                self.current = current;
+                self.phase = 0.0;
+                return (0.0, true);
+            };
+            self.current = current;
+            self.next = next;
+            self.primed = true;
+        }
+        let sample = self.current + (self.next - self.current) * self.phase as f32;
+        self.phase += self.source_per_output * (1.0 + correction);
+        while self.phase >= 1.0 {
+            self.current = self.next;
+            let Some(next) = queue.pop() else {
+                self.primed = false;
+                self.phase = 0.0;
+                return (sample, true);
+            };
+            self.next = next;
+            self.phase -= 1.0;
+        }
+        (sample, false)
+    }
+
+    pub fn reset(&mut self) {
+        self.current = 0.0;
+        self.next = 0.0;
+        self.phase = 0.0;
+        self.primed = false;
+    }
+}
+
+/// Drop the oldest queued capture frames when playback-only recovery finds an
+/// excessive backlog. The caller reports the discard and resets its resampler.
+pub fn discard_stale_capture(
+    queue: &crossbeam_queue::ArrayQueue<f32>,
+    target_frames: usize,
+) -> usize {
+    let excess = queue.len().saturating_sub(target_frames);
+    let mut discarded = 0;
+    for _ in 0..excess {
+        if queue.pop().is_some() {
+            discarded += 1;
+        }
+    }
+    discarded
+}
+
+/// Recover excessive capture backlog only when no recording can be damaged.
+pub fn recover_capture_backlog(
+    queue: &crossbeam_queue::ArrayQueue<f32>,
+    target_frames: usize,
+    capture_active: bool,
+) -> usize {
+    let threshold = target_frames.saturating_add(target_frames / 2);
+    if capture_active || queue.len() <= threshold {
+        0
+    } else {
+        discard_stale_capture(queue, target_frames)
     }
 }
 
@@ -654,6 +806,139 @@ mod tests {
             signals.pending_capture_interruption(),
             CaptureInterruptionNotices::default()
         );
+    }
+
+    #[test]
+    fn capture_clock_controller_bounds_correction_and_consumes_faster_above_target() {
+        let mut controller = CaptureClockController::new(1000);
+        assert_eq!(controller.update_for_block(1000, 128), 0.0);
+        let above = controller.update_for_block(3000, 128);
+        let below = controller.update_for_block(0, 128);
+        assert!(above > 0.0);
+        assert!(below < 0.0);
+        for occupancy in [0, usize::MAX, 0, usize::MAX] {
+            let correction = controller.update_for_block(occupancy, 128);
+            assert!((-0.005..=0.005).contains(&correction));
+        }
+    }
+
+    #[test]
+    fn capture_resampler_converts_between_independent_nominal_rates() {
+        let queue = crossbeam_queue::ArrayQueue::new(16);
+        for sample in 0..8 {
+            queue.push(sample as f32).unwrap();
+        }
+        let mut resampler = CaptureResampler::new(48_000, 24_000).unwrap();
+        let samples: Vec<_> = (0..3).map(|_| resampler.next_sample(&queue, 0.0)).collect();
+        assert_eq!(samples, vec![(0.0, false), (2.0, false), (4.0, false)]);
+        assert!(CaptureResampler::new(0, 48_000).is_err());
+    }
+
+    #[test]
+    fn capture_resampling_is_stable_across_independent_rate_and_block_boundaries() {
+        let make_queue = || {
+            let queue = crossbeam_queue::ArrayQueue::new(64);
+            for sample in 0..64 {
+                queue.push(sample as f32).unwrap();
+            }
+            queue
+        };
+        let mut contiguous = CaptureResampler::new(44_100, 48_000).unwrap();
+        let contiguous_queue = make_queue();
+        let expected: Vec<_> = (0..10)
+            .map(|_| contiguous.next_sample(&contiguous_queue, 0.0))
+            .collect();
+
+        let queue = make_queue();
+        let mut chunked = CaptureResampler::new(44_100, 48_000).unwrap();
+        let mut actual = Vec::new();
+        for block_frames in [3, 1, 6] {
+            for _ in 0..block_frames {
+                actual.push(chunked.next_sample(&queue, 0.0));
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn capture_resampler_reports_startup_underflow_and_recovers_when_samples_arrive() {
+        let queue = crossbeam_queue::ArrayQueue::new(4);
+        let mut resampler = CaptureResampler::new(48_000, 48_000).unwrap();
+        assert_eq!(resampler.next_sample(&queue, 0.0), (0.0, true));
+        queue.push(0.25).unwrap();
+        queue.push(0.5).unwrap();
+        queue.push(0.75).unwrap();
+        assert_eq!(resampler.next_sample(&queue, 0.0), (0.25, false));
+    }
+
+    #[test]
+    fn capture_resampler_reports_steady_state_underflow_when_lookahead_is_missing() {
+        let queue = crossbeam_queue::ArrayQueue::new(4);
+        queue.push(0.25).unwrap();
+        queue.push(0.5).unwrap();
+        let mut resampler = CaptureResampler::new(48_000, 48_000).unwrap();
+        assert_eq!(resampler.next_sample(&queue, 0.0), (0.25, true));
+    }
+
+    #[test]
+    fn capture_resampling_holds_bounded_occupancy_under_simulated_clock_drift() {
+        const TARGET: usize = 1000;
+        const RENDER_BLOCKS: [usize; 4] = [64, 128, 256, 480];
+        const CAPTURE_BLOCKS: [usize; 3] = [96, 240, 480];
+        let queue = crossbeam_queue::ArrayQueue::new(16_384);
+        for _ in 0..TARGET {
+            queue.push(0.25).unwrap();
+        }
+        let mut resampler = CaptureResampler::new(48_000, 48_000).unwrap();
+        let mut controller = CaptureClockController::new(TARGET);
+        let mut producer_fraction = 0.0_f64;
+        let mut capture_block_index = 0;
+        let mut low = usize::MAX;
+        let mut high = 0;
+
+        for render_index in 0..10_000 {
+            let render_block_frames = RENDER_BLOCKS[render_index % RENDER_BLOCKS.len()];
+            producer_fraction += render_block_frames as f64 * 1.001;
+            let produced = producer_fraction.floor() as usize;
+            producer_fraction -= produced as f64;
+            let mut remaining = produced;
+            while remaining > 0 {
+                let capture_block_frames =
+                    CAPTURE_BLOCKS[capture_block_index % CAPTURE_BLOCKS.len()];
+                capture_block_index += 1;
+                let frames = remaining.min(capture_block_frames);
+                for _ in 0..frames {
+                    assert!(queue.push(0.25).is_ok());
+                }
+                remaining -= frames;
+            }
+            let correction = controller.update_for_block(queue.len(), render_block_frames);
+            for _ in 0..render_block_frames {
+                let (_, missing) = resampler.next_sample(&queue, correction);
+                assert!(!missing, "simulated 1000 ppm drift caused underflow");
+            }
+            low = low.min(queue.len());
+            high = high.max(queue.len());
+        }
+
+        assert!(low > 0);
+        assert!(high < 16_384);
+        assert!(controller.correction_ppm() > 0);
+        assert!(controller.correction_ppm() <= 5_000);
+        assert!((queue.len() as isize - TARGET as isize).abs() < 300);
+    }
+
+    #[test]
+    fn stale_capture_recovery_discards_oldest_frames_to_the_bounded_target() {
+        let queue = crossbeam_queue::ArrayQueue::new(8);
+        for sample in 0..8 {
+            queue.push(sample as f32).unwrap();
+        }
+        assert_eq!(recover_capture_backlog(&queue, 3, true), 0);
+        assert_eq!(queue.len(), 8);
+        assert_eq!(recover_capture_backlog(&queue, 3, false), 5);
+        assert_eq!(queue.pop(), Some(5.0));
+        assert_eq!(queue.len(), 2);
     }
 
     #[test]
