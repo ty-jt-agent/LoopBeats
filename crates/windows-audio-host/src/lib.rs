@@ -14,6 +14,7 @@ use thiserror::Error;
 #[cfg(any(windows, test))]
 fn settle_runtime_failure(processor: &mut native_audio_host::Processor) {
     processor.process_block(&[], &mut [], native_audio_host::HostEvent::DeviceFailed);
+    processor.settle_pending_after_failure();
 }
 
 #[cfg(windows)]
