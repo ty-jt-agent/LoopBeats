@@ -510,7 +510,8 @@ fn run_render(
         );
         if stale_frames_discarded > 0 {
             capture_resampler.reset();
-            signals.record_capture_discontinuity(CaptureDiscontinuityReason::StaleCaptureDiscarded);
+            signals
+                .record_capture_discontinuity(CaptureDiscontinuityReason::CaptureBacklogDiscarded);
         }
         let correction = clock_controller.update_for_block(input.len(), available);
         clock_correction_ppm.store(clock_controller.correction_ppm(), Ordering::Release);
