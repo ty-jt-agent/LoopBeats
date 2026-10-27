@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub const DEFAULT_COMMAND_CAPACITY: usize = 64;
 pub const DEFAULT_ACK_CAPACITY: usize = 128;
 pub const DEFAULT_BLOCK_BUDGET: usize = 16;
+pub const SESSION_TRANSFER_CHUNK_FRAMES: usize = 2048;
 const PUBLISHERS_CLOSED: usize = 1 << (usize::BITS - 1);
 const PUBLISHER_CLEANUP_REQUIRED: usize = PUBLISHERS_CLOSED >> 1;
 const PUBLISHER_COUNT_MASK: usize = PUBLISHER_CLEANUP_REQUIRED - 1;
@@ -120,6 +121,7 @@ pub struct CommandAdapter {
     shared: Arc<SharedQueues>,
     staging: VecDeque<Envelope>,
     staging_capacity: usize,
+    session_transfer: SessionTransfer,
 }
 
 /// Audio-thread-owned engine and bounded render-block command application.
@@ -134,6 +136,203 @@ pub struct Processor {
     rendered_frames: u64,
     observed_generation: u64,
     capture_discontinuities: u64,
+    transfer: Arc<TransferQueues>,
+}
+
+struct TransferQueues {
+    requests: ArrayQueue<(u64, TransferRequest)>,
+    replies: ArrayQueue<(u64, TransferReply)>,
+    next_id: AtomicU64,
+    cancelled: AtomicBool,
+}
+
+// Fixed in-queue sample storage is deliberate: boxing would allocate on the
+// render side when acknowledgements are produced.
+#[allow(clippy::large_enum_variant)]
+enum TransferRequest {
+    BeginExport,
+    ReadExport {
+        track: usize,
+        revision: u32,
+        offset: usize,
+        frames: usize,
+    },
+    BeginImport {
+        metadata: ImportMetadata,
+    },
+    WriteImport {
+        track: usize,
+        offset: usize,
+        frames: usize,
+        samples: [f32; SESSION_TRANSFER_CHUNK_FRAMES],
+    },
+    CommitImport,
+    CancelImport,
+}
+
+// Keep bounded sample buffers inline so render-side servicing never allocates.
+#[allow(clippy::large_enum_variant)]
+enum TransferReply {
+    ExportStarted {
+        sample_rate: u32,
+        metadata: ImportMetadata,
+        revisions: [u32; 2],
+    },
+    Chunk {
+        frames: usize,
+        samples: [f32; SESSION_TRANSFER_CHUNK_FRAMES],
+    },
+    Result(bool),
+}
+
+/// Control-side, one-request-at-a-time access to native session audio. Requests
+/// and acknowledgements cross the render boundary through bounded lock-free
+/// queues; the render callback never waits for the file/UI side.
+#[derive(Clone)]
+pub struct SessionTransfer {
+    queues: Arc<TransferQueues>,
+    request_active: Arc<AtomicBool>,
+}
+
+impl SessionTransfer {
+    fn request(&self, request: TransferRequest) -> Result<TransferReply, String> {
+        if self.queues.cancelled.load(Ordering::Acquire) {
+            return Err("session transfer was canceled".into());
+        }
+        if self
+            .request_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err("session transfer is busy".into());
+        }
+        let _gate = TransferRequestGuard(Arc::clone(&self.request_active));
+        while self.queues.replies.pop().is_some() {}
+        let request_id = self.queues.next_id.fetch_add(1, Ordering::Relaxed).max(1);
+        self.queues
+            .requests
+            .push((request_id, request))
+            .map_err(|_| "session transfer is busy".to_string())?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if self.queues.cancelled.load(Ordering::Acquire) {
+                return Err("session transfer was canceled".into());
+            }
+            if let Some((reply_id, reply)) = self.queues.replies.pop() {
+                if reply_id == request_id {
+                    return Ok(reply);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("session transfer timed out".into());
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Wake a control-side request if the host is stopping or has failed.
+    pub fn abort_pending(&self) {
+        self.queues.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn begin_export(&self) -> Result<(u32, ImportMetadata, [u32; 2]), String> {
+        match self.request(TransferRequest::BeginExport)? {
+            TransferReply::ExportStarted {
+                sample_rate,
+                metadata,
+                revisions,
+            } => Ok((sample_rate, metadata, revisions)),
+            TransferReply::Result(false) => {
+                Err("session cannot be exported while a track is overdubbing".into())
+            }
+            _ => Err("invalid session transfer acknowledgement".into()),
+        }
+    }
+
+    pub fn read_export_chunk(
+        &self,
+        track: usize,
+        revision: u32,
+        offset: usize,
+        frames: usize,
+    ) -> Result<Vec<f32>, String> {
+        if !(1..=SESSION_TRANSFER_CHUNK_FRAMES).contains(&frames) {
+            return Err("invalid session transfer chunk size".into());
+        }
+        match self.request(TransferRequest::ReadExport {
+            track,
+            revision,
+            offset,
+            frames,
+        })? {
+            TransferReply::Chunk {
+                frames: actual,
+                samples,
+            } if actual == frames => Ok(samples[..frames].to_vec()),
+            TransferReply::Result(false) => Err("recording changed during export".into()),
+            _ => Err("invalid session transfer acknowledgement".into()),
+        }
+    }
+
+    pub fn begin_import(&self, metadata: ImportMetadata) -> Result<(), String> {
+        match self.request(TransferRequest::BeginImport { metadata })? {
+            TransferReply::Result(true) => Ok(()),
+            TransferReply::Result(false) => {
+                Err("session is incompatible with the current engine state".into())
+            }
+            _ => Err("invalid session transfer acknowledgement".into()),
+        }
+    }
+
+    pub fn write_import_chunk(
+        &self,
+        track: usize,
+        offset: usize,
+        samples: &[f32],
+    ) -> Result<(), String> {
+        if samples.is_empty()
+            || samples.len() > SESSION_TRANSFER_CHUNK_FRAMES
+            || samples.iter().any(|sample| !sample.is_finite())
+        {
+            return Err("invalid session transfer chunk".into());
+        }
+        let mut bounded = [0.0; SESSION_TRANSFER_CHUNK_FRAMES];
+        bounded[..samples.len()].copy_from_slice(samples);
+        match self.request(TransferRequest::WriteImport {
+            track,
+            offset,
+            frames: samples.len(),
+            samples: bounded,
+        })? {
+            TransferReply::Result(true) => Ok(()),
+            TransferReply::Result(false) => Err("session transfer chunk was rejected".into()),
+            _ => Err("invalid session transfer acknowledgement".into()),
+        }
+    }
+
+    pub fn commit_import(&self) -> Result<(), String> {
+        match self.request(TransferRequest::CommitImport)? {
+            TransferReply::Result(true) => Ok(()),
+            TransferReply::Result(false) => {
+                Err("session changed or staging was incomplete; retry the import".into())
+            }
+            _ => Err("invalid session transfer acknowledgement".into()),
+        }
+    }
+
+    pub fn cancel_import(&self) -> Result<(), String> {
+        match self.request(TransferRequest::CancelImport)? {
+            TransferReply::Result(true) => Ok(()),
+            _ => Err("session transfer cancellation failed".into()),
+        }
+    }
+}
+
+struct TransferRequestGuard(Arc<AtomicBool>);
+impl Drop for TransferRequestGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl Processor {
@@ -262,12 +461,24 @@ impl Processor {
             next_command_id: AtomicU64::new(1),
             ack_capacity,
         });
+        let transfer = Arc::new(TransferQueues {
+            requests: ArrayQueue::new(1),
+            // One old acknowledgement may arrive just as a timed-out caller
+            // has submitted its next request; keep both bounded outcomes.
+            replies: ArrayQueue::new(2),
+            next_id: AtomicU64::new(1),
+            cancelled: AtomicBool::new(false),
+        });
         let published_snapshot = Arc::new(ArrayQueue::new(1));
         let published_frames = Arc::new(AtomicU64::new(0));
         let adapter = CommandAdapter {
             shared: Arc::clone(&shared),
             staging: VecDeque::with_capacity(command_capacity),
             staging_capacity: command_capacity,
+            session_transfer: SessionTransfer {
+                queues: Arc::clone(&transfer),
+                request_active: Arc::new(AtomicBool::new(false)),
+            },
         };
         let processor = Self {
             shared,
@@ -280,6 +491,7 @@ impl Processor {
             rendered_frames: 0,
             observed_generation: 1,
             capture_discontinuities: 0,
+            transfer,
         };
         processor.publish_snapshot();
         (adapter, processor)
@@ -384,6 +596,99 @@ impl Processor {
         self.engine.process(input, output);
         self.rendered_frames = self.rendered_frames.saturating_add(output.len() as u64);
         self.publish_snapshot();
+    }
+
+    /// Service one file-side transfer request after the just-rendered block has
+    /// been handed to the device. WASAPI calls this outside `process_block`,
+    /// so chunk copying and acknowledgement work is outside audio processing.
+    pub fn service_session_transfer(&mut self) {
+        let Some((request_id, request)) = self.transfer.requests.pop() else {
+            return;
+        };
+        let reply = match request {
+            TransferRequest::BeginExport => {
+                let snapshot = self.engine.snapshot();
+                if snapshot
+                    .tracks
+                    .iter()
+                    .any(|track| track.state == TrackState::Overdubbing)
+                {
+                    TransferReply::Result(false)
+                } else {
+                    let metadata = ImportMetadata {
+                        fx: snapshot.fx.map(|slot| slot.config),
+                        cycle_length: snapshot.cycle_length_samples,
+                        master_gain: snapshot.master_gain,
+                        tracks: snapshot.tracks.map(|track| ImportTrack {
+                            length: if track.state == TrackState::Recording {
+                                0
+                            } else {
+                                track.length_samples
+                            },
+                            mode: track.mode,
+                            gain: track.gain,
+                            muted: track.muted,
+                        }),
+                    };
+                    TransferReply::ExportStarted {
+                        sample_rate: self.sample_rate,
+                        metadata,
+                        revisions: [
+                            self.engine.recording_revision(0),
+                            self.engine.recording_revision(1),
+                        ],
+                    }
+                }
+            }
+            TransferRequest::ReadExport {
+                track,
+                revision,
+                offset,
+                frames,
+            } => {
+                let mut samples = [0.0; SESSION_TRANSFER_CHUNK_FRAMES];
+                let valid = frames > 0
+                    && frames <= SESSION_TRANSFER_CHUNK_FRAMES
+                    && track < 2
+                    && self
+                        .engine
+                        .read_recording(track, revision, offset, &mut samples[..frames]);
+                if valid {
+                    TransferReply::Chunk { frames, samples }
+                } else {
+                    TransferReply::Result(false)
+                }
+            }
+            TransferRequest::BeginImport { metadata } => TransferReply::Result(
+                self.engine
+                    .begin_import(metadata, self.engine.command_revision()),
+            ),
+            TransferRequest::WriteImport {
+                track,
+                offset,
+                frames,
+                samples,
+            } => {
+                let valid = frames > 0
+                    && frames <= SESSION_TRANSFER_CHUNK_FRAMES
+                    && self.engine.write_import(track, offset, &samples[..frames]);
+                TransferReply::Result(valid)
+            }
+            TransferRequest::CommitImport => {
+                let committed = self.engine.commit_import();
+                if committed {
+                    self.publish_snapshot();
+                }
+                TransferReply::Result(committed)
+            }
+            TransferRequest::CancelImport => {
+                self.engine.cancel_import();
+                TransferReply::Result(true)
+            }
+        };
+        // The single outstanding request reserves the single reply slot before
+        // dispatch; failure here indicates a protocol invariant violation.
+        let _ = self.transfer.replies.push((request_id, reply));
     }
 
     fn publish_snapshot(&self) {
@@ -510,6 +815,9 @@ impl Processor {
 }
 
 impl CommandAdapter {
+    pub fn session_transfer(&self) -> SessionTransfer {
+        self.session_transfer.clone()
+    }
     pub fn submit(&mut self, command: AudioCommand) -> Result<AcceptedCommand, RejectReason> {
         self.submit_checked(command, None)
     }

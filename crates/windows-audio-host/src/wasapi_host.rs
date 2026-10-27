@@ -596,6 +596,9 @@ fn run_render(
         {
             return Err(map_error(error));
         }
+        // Session chunks are copied only after this render period is submitted.
+        // Serialization and transfer acknowledgements never run in process_block.
+        processor.service_session_transfer();
     }
     Ok(())
 }

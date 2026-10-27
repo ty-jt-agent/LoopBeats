@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
+import type { ReactNode } from 'react';
 import type {
   AudioApplication,
   AudioApplicationCommand,
@@ -107,9 +108,16 @@ const getNoRecoverySnapshot = () => noRecovery;
 export function App({
   audio,
   web,
+  sessionFiles,
 }: {
   audio: AudioApplication;
   web?: WebAudioExtensions;
+  sessionFiles?: (props: {
+    exportEnabled: boolean;
+    importEnabled: boolean;
+    onBusy: (busy: boolean) => void;
+    onStatus: (status: string) => void;
+  }) => ReactNode;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroup>('Session');
@@ -821,6 +829,19 @@ export function App({
                     }
                   />
                 </>
+              ) : sessionFiles ? (
+                sessionFiles({
+                  exportEnabled:
+                    ready && !sessionBusy && !switchPending && !overdubbing,
+                  importEnabled:
+                    ready &&
+                    !sessionBusy &&
+                    !switchPending &&
+                    !overdubbing &&
+                    !recording,
+                  onBusy: setSessionBusy,
+                  onStatus: setTransferStatus,
+                })
               ) : (
                 <p>Session file transfer is unavailable in this host.</p>
               )}
