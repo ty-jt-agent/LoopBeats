@@ -157,7 +157,7 @@ test('shared UI records two tracks, overdubs, monitors input, and enables Input 
           blockSequence: 2,
         };
       }
-      if (name === 'audio_host_stop') return undefined;
+      if (name === 'audio_host_stop') return generation + 1;
       throw new Error(`Unexpected native command ${name}`);
     },
   );
@@ -219,6 +219,7 @@ test('shared UI records two tracks, overdubs, monitors input, and enables Input 
       'audio_submit',
       expect.objectContaining({
         command: expect.objectContaining({ type: 'set-fx', scope: 0 }),
+        expectedGeneration: generation,
       }),
     ),
   );

@@ -3,15 +3,27 @@
 #[cfg(windows)]
 mod windows_app {
     use loop_engine::{FxConfig, PlaybackMode, TrackState};
-    use native_audio_host::{AudioCommand, CommandOutcome};
+    use native_audio_host::{AudioCommand, CommandAdapter, CommandOutcome};
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
     use tauri::State;
     use windows_audio_host::{HostConfig, MonitoringHost};
 
     #[derive(Default)]
-    struct HostState(Mutex<Option<MonitoringHost>>);
+    struct HostState {
+        lifecycle: Mutex<HostLifecycle>,
+        submit_gate: Mutex<()>,
+        pending: Mutex<HashMap<u64, u64>>,
+        terminal: Mutex<HashMap<u64, serde_json::Value>>,
+    }
+
+    #[derive(Default)]
+    struct HostLifecycle {
+        host: Option<MonitoringHost>,
+        generation: u64,
+    }
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -115,9 +127,31 @@ mod windows_app {
     }
 
     #[tauri::command]
-    fn audio_host_start(state: State<'_, HostState>) -> Result<u64, String> {
-        let mut host = state.0.lock().map_err(|_| "audio host state unavailable")?;
-        if let Some(host) = host.as_mut() {
+    fn audio_host_start(
+        expected_generation: u64,
+        state: State<'_, HostState>,
+    ) -> Result<u64, String> {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .map_err(|_| "audio host state unavailable")?;
+        if let Some(host) = lifecycle.host.as_ref() {
+            let current_generation = host.commands.session_generation();
+            require_generation(expected_generation, current_generation)?;
+            if host.diagnostics().device_failed {
+                let mut failed_host = lifecycle.host.take().unwrap();
+                failed_host.shutdown();
+                settle_host_commands(&mut failed_host, &state);
+                let next_generation = current_generation.saturating_add(1);
+                let mut host = MonitoringHost::start(HostConfig::default())
+                    .map_err(|error| error.to_string())?;
+                advance_host_to(&mut host, next_generation);
+                let generation = host.commands.session_generation();
+                lifecycle.generation = generation;
+                lifecycle.host = Some(host);
+                return Ok(generation);
+            }
+            let host = lifecycle.host.as_mut().unwrap();
             let notices = host.signals.acknowledge_capture_interruption();
             if notices
                 .initial_recording_discarded_tracks
@@ -127,46 +161,184 @@ mod windows_app {
             {
                 host.commands.restart();
             }
-            return Ok(host.commands.session_generation());
+            let generation = host.commands.session_generation();
+            lifecycle.generation = generation;
+            return Ok(generation);
         }
-        *host =
-            Some(MonitoringHost::start(HostConfig::default()).map_err(|error| error.to_string())?);
-        Ok(host.as_ref().unwrap().commands.session_generation())
+        require_generation(expected_generation, lifecycle.generation)?;
+        let mut host =
+            MonitoringHost::start(HostConfig::default()).map_err(|error| error.to_string())?;
+        advance_host_to(&mut host, lifecycle.generation);
+        let generation = host.commands.session_generation();
+        lifecycle.generation = generation;
+        lifecycle.host = Some(host);
+        Ok(generation)
     }
 
     #[tauri::command]
-    fn audio_host_stop(state: State<'_, HostState>) -> Result<(), String> {
-        let mut host = state.0.lock().map_err(|_| "audio host state unavailable")?;
-        if let Some(host) = host.take() {
+    fn audio_host_stop(
+        expected_generation: u64,
+        state: State<'_, HostState>,
+    ) -> Result<u64, String> {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .map_err(|_| "audio host state unavailable")?;
+        let current_generation = lifecycle
+            .host
+            .as_ref()
+            .map(|host| host.commands.session_generation())
+            .unwrap_or(lifecycle.generation);
+        require_generation(expected_generation, current_generation)?;
+        if let Some(mut host) = lifecycle.host.take() {
             host.shutdown();
+            settle_host_commands(&mut host, &state);
         }
-        Ok(())
+        lifecycle.generation = current_generation.saturating_add(1);
+        Ok(lifecycle.generation)
     }
 
     #[tauri::command]
     fn audio_submit(
         command: UiCommand,
+        expected_generation: u64,
         state: State<'_, HostState>,
     ) -> Result<serde_json::Value, String> {
         let command = AudioCommand::try_from(command)?;
-        let mut host = state.0.lock().map_err(|_| "audio host state unavailable")?;
-        let host = host
-            .as_mut()
-            .ok_or_else(|| "audio host is unavailable".to_string())?;
-        let accepted = host
-            .commands
-            .submit(command)
-            .map_err(|reason| format!("command rejected: {reason:?}"))?;
-        host.commands.flush(64);
+        let _submission = state
+            .submit_gate
+            .lock()
+            .map_err(|_| "audio command queue unavailable")?;
+        let accepted = {
+            let mut lifecycle = state
+                .lifecycle
+                .lock()
+                .map_err(|_| "audio host state unavailable")?;
+            let host = lifecycle
+                .host
+                .as_mut()
+                .ok_or_else(|| "audio host is unavailable".to_string())?;
+            let current_generation = host.commands.session_generation();
+            require_generation(expected_generation, current_generation)?;
+            let accepted = host
+                .commands
+                .submit_for_generation(command, expected_generation)
+                .map_err(|reason| format!("command rejected: {reason:?}"))?;
+            host.commands.flush(64);
+            state
+                .pending
+                .lock()
+                .map_err(|_| "audio command outcomes unavailable")?
+                .insert(accepted.command_id, accepted.generation);
+            accepted
+        };
         loop {
-            if let Some(outcome) = host.commands.take_outcome() {
-                if outcome.command_id() != accepted.command_id {
-                    continue;
+            let outcome = {
+                let mut lifecycle = state
+                    .lifecycle
+                    .lock()
+                    .map_err(|_| "audio host state unavailable")?;
+                if let Some(host) = lifecycle.host.as_mut() {
+                    let mut matching = None;
+                    while let Some(outcome) = host.commands.take_outcome() {
+                        let command_id = outcome.command_id();
+                        state
+                            .pending
+                            .lock()
+                            .map_err(|_| "audio command outcomes unavailable")?
+                            .remove(&command_id);
+                        let value = outcome_json(outcome);
+                        if command_id == accepted.command_id {
+                            matching = Some(value);
+                            break;
+                        }
+                        state
+                            .terminal
+                            .lock()
+                            .map_err(|_| "audio command outcomes unavailable")?
+                            .insert(command_id, value);
+                    }
+                    matching
+                } else {
+                    None
                 }
-                return Ok(outcome_json(outcome));
+            };
+            if let Some(outcome) = outcome {
+                return Ok(outcome);
+            }
+            if let Some(outcome) = state
+                .terminal
+                .lock()
+                .map_err(|_| "audio command outcomes unavailable")?
+                .remove(&accepted.command_id)
+            {
+                return Ok(outcome);
+            }
+            if state
+                .lifecycle
+                .lock()
+                .map_err(|_| "audio host state unavailable")?
+                .host
+                .is_none()
+            {
+                state
+                    .pending
+                    .lock()
+                    .map_err(|_| "audio command outcomes unavailable")?
+                    .remove(&accepted.command_id);
+                return Ok(stale_outcome_json(accepted.command_id, accepted.generation));
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    fn require_generation(expected: u64, current: u64) -> Result<(), String> {
+        if expected == current {
+            Ok(())
+        } else {
+            Err(format!(
+                "stale audio session generation: expected {expected}, current {current}"
+            ))
+        }
+    }
+
+    fn advance_host_to(host: &mut MonitoringHost, generation: u64) {
+        advance_commands_to(&mut host.commands, generation);
+    }
+
+    fn advance_commands_to(commands: &mut CommandAdapter, generation: u64) {
+        while commands.session_generation() < generation {
+            commands.restart();
+        }
+    }
+
+    fn settle_host_commands(host: &mut MonitoringHost, state: &HostState) {
+        let mut outcomes = Vec::new();
+        while let Some(outcome) = host.commands.take_outcome() {
+            outcomes.push(outcome);
+        }
+        let mut pending = state
+            .pending
+            .lock()
+            .expect("audio pending command list unavailable");
+        let mut terminal = state
+            .terminal
+            .lock()
+            .expect("audio command outcome cache unavailable");
+        for outcome in outcomes {
+            let command_id = outcome.command_id();
+            pending.remove(&command_id);
+            terminal.insert(command_id, outcome_json(outcome));
+        }
+        for (command_id, generation) in pending.drain() {
+            terminal.insert(command_id, stale_outcome_json(command_id, generation));
+        }
+    }
+
+    fn stale_outcome_json(command_id: u64, generation: u64) -> serde_json::Value {
+        serde_json::json!({
+            "commandId": command_id, "generation": generation, "status": "stale",
+        })
     }
 
     fn outcome_json(outcome: CommandOutcome) -> serde_json::Value {
@@ -206,13 +378,18 @@ mod windows_app {
 
     #[tauri::command]
     fn audio_snapshot(state: State<'_, HostState>) -> Result<serde_json::Value, String> {
-        let mut guard = state.0.lock().map_err(|_| "audio host state unavailable")?;
-        let Some(host) = guard.as_mut() else {
-            return Ok(idle_snapshot());
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .map_err(|_| "audio host state unavailable")?;
+        let Some(host) = lifecycle.host.as_mut() else {
+            return Ok(idle_snapshot(lifecycle.generation));
         };
         let Some(snapshot) = host.latest_snapshot() else {
-            return Ok(idle_snapshot());
+            return Ok(idle_snapshot(lifecycle.generation));
         };
+        let generation = host.commands.session_generation();
+        lifecycle.generation = generation;
         let diagnostics = host.diagnostics();
         let interrupted = diagnostics
             .pending_capture_interruption
@@ -282,26 +459,40 @@ mod windows_app {
             FxConfig::None => serde_json::json!({ "config": { "type": "None" }, "transitioning": slot.transitioning, "removing": slot.removing }),
             FxConfig::LowPass { cutoff_hz, bypassed } => serde_json::json!({ "config": { "type": "LowPass", "cutoffHz": cutoff_hz, "bypassed": bypassed }, "transitioning": slot.transitioning, "removing": slot.removing }),
         });
+        let status = host_status(diagnostics.device_failed, interrupted);
+        let host_error = diagnostics
+            .device_failed
+            .then_some("A Windows audio device failed. Reinitialize audio to reopen the streams.");
         Ok(serde_json::json!({
-            "generation": host.commands.session_generation(),
+            "generation": generation,
             "engine": {
                 "fx": fx, "masterGain": snapshot.master_gain,
                 "transport": { "running": snapshot.transport_running, "positionSamples": snapshot.transport_position_samples, "cycleLengthSamples": snapshot.cycle_length_samples },
                 "tracks": tracks, "monitoring": snapshot.monitoring,
                 "processedFrames": host.rendered_frames(), "inputLevel": 0, "outputLevel": 0,
             },
-            "host": { "inputDeviceId": null, "status": if interrupted { "interrupted" } else { "ready" }, "error": null, "sampleRate": diagnostics.render.actual_sample_rate, "captureInterruption": capture_interruption },
+            "host": { "inputDeviceId": null, "status": status, "error": host_error, "sampleRate": diagnostics.render.actual_sample_rate, "captureInterruption": capture_interruption },
         }))
     }
 
-    fn idle_snapshot() -> serde_json::Value {
+    fn idle_snapshot(generation: u64) -> serde_json::Value {
         serde_json::json!({
-            "generation": 0,
+            "generation": generation,
             "engine": { "masterGain": 1, "transport": { "running": false, "positionSamples": 0, "cycleLengthSamples": 0 },
                 "tracks": [empty_track(), empty_track()], "monitoring": false, "processedFrames": 0, "inputLevel": 0, "outputLevel": 0,
                 "fx": std::array::from_fn::<_, 4, _>(|_| serde_json::json!({ "config": { "type": "None" }, "transitioning": false, "removing": false })) },
             "host": { "inputDeviceId": null, "status": "idle", "error": null, "sampleRate": null },
         })
+    }
+
+    fn host_status(device_failed: bool, interrupted: bool) -> &'static str {
+        if device_failed {
+            "error"
+        } else if interrupted {
+            "interrupted"
+        } else {
+            "ready"
+        }
     }
 
     fn empty_track() -> serde_json::Value {
@@ -322,6 +513,31 @@ mod windows_app {
             ])
             .run(tauri::generate_context!())
             .expect("failed to run LoopBeats Windows shell");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn stale_bridge_generation_is_rejected() {
+            assert!(require_generation(4, 5).is_err());
+            assert!(require_generation(5, 5).is_ok());
+        }
+
+        #[test]
+        fn device_failure_is_visible_as_an_error_even_without_capture_notices() {
+            assert_eq!(host_status(true, false), "error");
+            assert_eq!(host_status(false, true), "interrupted");
+            assert_eq!(host_status(false, false), "ready");
+        }
+
+        #[test]
+        fn recovered_host_generation_is_newer_than_the_failed_host() {
+            let (mut commands, _processor) = native_audio_host::Processor::controlled(16, 48_000);
+            advance_commands_to(&mut commands, 4);
+            assert_eq!(commands.session_generation(), 4);
+        }
     }
 }
 

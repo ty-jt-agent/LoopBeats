@@ -58,6 +58,7 @@ pub struct MonitoringHost {
     snapshot_feed: Arc<ArrayQueue<EngineSnapshot>>,
     latest_engine_snapshot: Option<EngineSnapshot>,
     rendered_frames: Arc<AtomicU64>,
+    stopped: bool,
 }
 
 impl MonitoringHost {
@@ -136,7 +137,7 @@ impl MonitoringHost {
                     render_failure_signals.render_failure();
                     render_failure_stop.store(true, Ordering::Release);
                     eprintln!("WASAPI render stopped: {error}");
-                } else if render_failure_signals.device_failed() {
+                } else {
                     processor.settle_pending_after_failure();
                 }
             }) {
@@ -184,12 +185,17 @@ impl MonitoringHost {
             snapshot_feed,
             latest_engine_snapshot: None,
             rendered_frames,
+            stopped: false,
         })
     }
 
-    pub fn shutdown(mut self) {
+    pub fn shutdown(&mut self) {
+        if self.stopped {
+            return;
+        }
         self.commands.shutdown();
         self.workers.shutdown();
+        self.stopped = true;
     }
 
     pub fn latest_snapshot(&mut self) -> Option<EngineSnapshot> {
@@ -221,8 +227,7 @@ impl MonitoringHost {
 
 impl Drop for MonitoringHost {
     fn drop(&mut self) {
-        self.commands.shutdown();
-        self.workers.shutdown();
+        self.shutdown();
     }
 }
 

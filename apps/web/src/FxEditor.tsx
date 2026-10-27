@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { FxConfig, FxScope, FxSnapshot } from '@loopbeats/domain';
 import type { AudioSnapshot } from '@loopbeats/domain';
 import { fxStateLabel } from './fx-state';
@@ -82,12 +82,27 @@ export function FxEditor({
     scope === 0
       ? snapshot.inputFxError
       : scope === 3
-        ? snapshot.masterFxError
+        ? (snapshot.masterFxError ?? snapshot.playbackFxErrors?.[2])
         : snapshot.playbackFxErrors?.[playbackIndex];
-  const config = slot?.config ?? {
-    type: 'LowPass' as const,
-    cutoffHz: maximum,
-    bypassed: true,
+  const defaultConfig = useMemo<FxConfig>(
+    () => ({ type: 'LowPass', cutoffHz: maximum, bypassed: true }),
+    [maximum],
+  );
+  const acknowledgedConfig = slot?.config ?? defaultConfig;
+  const desiredConfigs = useRef(new Map<FxScope, FxConfig>());
+  useEffect(() => {
+    const desired = desiredConfigs.current.get(scope);
+    if (
+      desired &&
+      !pending &&
+      (error || JSON.stringify(desired) === JSON.stringify(acknowledgedConfig))
+    )
+      desiredConfigs.current.delete(scope);
+  }, [acknowledgedConfig, error, pending, scope]);
+  const config = acknowledgedConfig;
+  const requestConfig = (next: FxConfig) => {
+    desiredConfigs.current.set(scope, next);
+    onConfigChange(scope, next);
   };
   const hasFilter = config.type === 'LowPass';
   const cutoff = hasFilter ? config.cutoffHz : maximum;
@@ -97,13 +112,21 @@ export function FxEditor({
   );
   const setCutoff = (next: number) => {
     const bounded = Math.max(20, Math.min(maximum, next));
-    if (hasFilter) onConfigChange(scope, { ...config, cutoffHz: bounded });
+    const current = desiredConfigs.current.get(scope) ?? config;
+    if (current.type === 'LowPass')
+      requestConfig({ ...current, cutoffHz: bounded });
   };
-  const acknowledgedState = !hasFilter
-    ? 'None'
-    : config.bypassed
-      ? 'Bypassed'
-      : 'On';
+  const toggleBypass = () => {
+    const current = desiredConfigs.current.get(scope) ?? config;
+    if (current.type === 'LowPass')
+      requestConfig({ ...current, bypassed: !current.bypassed });
+  };
+  const acknowledgedState =
+    acknowledgedConfig.type === 'None'
+      ? 'None'
+      : acknowledgedConfig.bypassed
+        ? 'Bypassed'
+        : 'On';
 
   return (
     <section
@@ -154,8 +177,7 @@ export function FxEditor({
             value={config.type}
             disabled={!editable || pending}
             onChange={(event) =>
-              onConfigChange(
-                scope,
+              requestConfig(
                 event.currentTarget.value === 'None'
                   ? { type: 'None' }
                   : { type: 'LowPass', cutoffHz: maximum, bypassed: true },
@@ -176,10 +198,7 @@ export function FxEditor({
           }
           aria-pressed={hasFilter && !config.bypassed}
           disabled={!editable || !hasFilter || pending}
-          onClick={() =>
-            hasFilter &&
-            onConfigChange(scope, { ...config, bypassed: !config.bypassed })
-          }
+          onClick={() => hasFilter && toggleBypass()}
         >
           {hasFilter && !config.bypassed ? 'Bypass' : 'On'}
         </button>
