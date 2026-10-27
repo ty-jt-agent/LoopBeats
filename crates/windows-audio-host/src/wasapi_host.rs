@@ -263,43 +263,55 @@ impl Drop for MonitoringHost {
 }
 
 fn resolve_endpoints(config: &HostConfig) -> Result<(String, String, u32, u32), HostError> {
+    let capture_endpoint_id = config.capture_endpoint_id.clone();
+    let render_endpoint_id = config.render_endpoint_id.clone();
+    thread::Builder::new()
+        .name("loopbeats-wasapi-endpoint-resolution".into())
+        // Tauri may invoke startup on a thread that already has an STA COM
+        // apartment. Resolve endpoints on a fresh thread so WASAPI can safely
+        // initialize its required MTA without RPC_E_CHANGED_MODE.
+        .spawn(move || resolve_endpoints_on_current_thread(capture_endpoint_id, render_endpoint_id))
+        .map_err(|error| HostError::ThreadStart(error.to_string()))?
+        .join()
+        .map_err(|_| HostError::ThreadStart("endpoint resolution thread panicked".into()))?
+}
+
+fn resolve_endpoints_on_current_thread(
+    capture_endpoint_id: Option<String>,
+    render_endpoint_id: Option<String>,
+) -> Result<(String, String, u32, u32), HostError> {
     let _com = ComApartment::enter()?;
-    let resolved = (|| {
-        let enumerator = DeviceEnumerator::new().map_err(map_error)?;
-        let capture = match &config.capture_endpoint_id {
-            Some(id) => enumerator.get_device(id),
-            None => enumerator.get_default_device(&Direction::Capture),
-        }
-        .map_err(map_error)?;
-        let render = match &config.render_endpoint_id {
-            Some(id) => enumerator.get_device(id),
-            None => enumerator.get_default_device(&Direction::Render),
-        }
-        .map_err(map_error)?;
-        if capture.get_direction() != Direction::Capture
-            || render.get_direction() != Direction::Render
-        {
-            return Err(HostError::WrongEndpointDirection);
-        }
-        let render_rate = render
-            .get_iaudioclient()
-            .and_then(|client| client.get_mixformat())
-            .map_err(map_error)?
-            .get_samplespersec();
-        let capture_rate = capture
-            .get_iaudioclient()
-            .and_then(|client| client.get_mixformat())
-            .map_err(map_error)?
-            .get_samplespersec();
-        Ok::<_, HostError>((
-            capture.get_id().map_err(map_error)?,
-            render.get_id().map_err(map_error)?,
-            capture_rate,
-            render_rate,
-        ))
-    })();
-    let (capture_id, render_id, capture_rate, render_rate) = resolved?;
-    Ok((capture_id, render_id, capture_rate, render_rate))
+    let enumerator = DeviceEnumerator::new().map_err(map_error)?;
+    let capture = match &capture_endpoint_id {
+        Some(id) => enumerator.get_device(id),
+        None => enumerator.get_default_device(&Direction::Capture),
+    }
+    .map_err(map_error)?;
+    let render = match &render_endpoint_id {
+        Some(id) => enumerator.get_device(id),
+        None => enumerator.get_default_device(&Direction::Render),
+    }
+    .map_err(map_error)?;
+    if capture.get_direction() != Direction::Capture || render.get_direction() != Direction::Render
+    {
+        return Err(HostError::WrongEndpointDirection);
+    }
+    let render_rate = render
+        .get_iaudioclient()
+        .and_then(|client| client.get_mixformat())
+        .map_err(map_error)?
+        .get_samplespersec();
+    let capture_rate = capture
+        .get_iaudioclient()
+        .and_then(|client| client.get_mixformat())
+        .map_err(map_error)?
+        .get_samplespersec();
+    Ok((
+        capture.get_id().map_err(map_error)?,
+        render.get_id().map_err(map_error)?,
+        capture_rate,
+        render_rate,
+    ))
 }
 
 fn run_capture(
