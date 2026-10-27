@@ -94,7 +94,7 @@ export function FxEditor({
   const desiredConfigs = useRef(new Map<FxScope, FxConfig>());
   useLayoutEffect(() => {
     desiredConfigs.current.clear();
-  }, [intentResetKey]);
+  }, [intentResetKey, snapshot.status]);
   useEffect(() => {
     const desired = desiredConfigs.current.get(scope);
     if (
