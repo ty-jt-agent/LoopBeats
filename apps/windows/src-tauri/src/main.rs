@@ -6,8 +6,10 @@ mod windows_app {
     use native_audio_host::{
         AudioCommand, CommandAdapter, CommandOutcome, RetainedSession, SessionTransfer,
     };
-    use serde::{Deserialize, Serialize};
+    use serde::de::{Error as DeError, SeqAccess, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize};
     use std::collections::HashMap;
+    use std::fmt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -598,6 +600,57 @@ mod windows_app {
         tracks: [TransferTrack; 2],
     }
 
+    struct TransferSamples {
+        values: [f32; 2048],
+        length: usize,
+    }
+
+    impl TransferSamples {
+        fn as_slice(&self) -> &[f32] {
+            &self.values[..self.length]
+        }
+    }
+
+    impl<'de> Deserialize<'de> for TransferSamples {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct SamplesVisitor;
+
+            impl<'de> Visitor<'de> for SamplesVisitor {
+                type Value = TransferSamples;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("an array of 1 to 2,048 audio samples")
+                }
+
+                fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                where
+                    A: SeqAccess<'de>,
+                {
+                    let mut values = [0.0; 2048];
+                    let mut length = 0;
+                    while let Some(sample) = sequence.next_element::<f32>()? {
+                        if length == values.len() {
+                            return Err(A::Error::custom(
+                                "session transfer chunks may contain at most 2,048 frames",
+                            ));
+                        }
+                        values[length] = sample;
+                        length += 1;
+                    }
+                    if length == 0 {
+                        return Err(A::Error::custom("session transfer chunks cannot be empty"));
+                    }
+                    Ok(TransferSamples { values, length })
+                }
+            }
+
+            deserializer.deserialize_seq(SamplesVisitor)
+        }
+    }
+
     fn import_metadata(manifest: TransferManifest) -> Result<(u32, ImportMetadata), String> {
         if manifest.format != "LoopBeatsSession" || manifest.version != 2 {
             return Err("unsupported session format".into());
@@ -806,12 +859,9 @@ mod windows_app {
         token: u64,
         track: usize,
         offset: usize,
-        samples: Vec<f32>,
+        samples: TransferSamples,
         state: State<'_, Arc<HostState>>,
     ) -> Result<(), String> {
-        if samples.is_empty() || samples.len() > 2048 {
-            return Err("session transfer chunks must contain 1 to 2,048 frames".into());
-        }
         let state = Arc::clone(state.inner());
         run_host_call(move || {
             let _gate = state
@@ -829,7 +879,7 @@ mod windows_app {
                 } if *active == token => transfer.clone(),
                 _ => return Err("stale session import operation".into()),
             };
-            transfer.write_import_chunk(track, offset, &samples)
+            transfer.write_import_chunk(track, offset, samples.as_slice())
         })
         .await
         .map_err(|error| error.to_string())?
