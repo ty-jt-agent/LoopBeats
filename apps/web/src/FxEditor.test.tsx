@@ -80,6 +80,7 @@ function renderEditor(
       snapshot={snapshot}
       enabled
       scope={scope}
+      intentResetKey={0}
       focusRequest={0}
       onScopeChange={vi.fn()}
       onClose={vi.fn()}
@@ -100,6 +101,40 @@ test('cutoff edits preserve an in-flight bypass target', () => {
     type: 'LowPass',
     cutoffHz: expect.any(Number),
     bypassed: false,
+  });
+});
+
+test('a confirmed reset clears canceled FX intent before later edits', () => {
+  const snapshot = makeSnapshot();
+  const onConfigChange = vi.fn();
+  const renderProps = (intentResetKey: number) => (
+    <FxEditor
+      onConfigChange={onConfigChange}
+      supportedScopes={[0, 1, 2, 3]}
+      snapshot={snapshot}
+      enabled
+      scope={0}
+      intentResetKey={intentResetKey}
+      focusRequest={0}
+      onScopeChange={vi.fn()}
+      onClose={vi.fn()}
+    />
+  );
+  const { rerender } = render(renderProps(0));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Enable Input filter' }));
+  fireEvent.change(screen.getByRole('slider', { name: 'Input cutoff' }), {
+    target: { value: '700' },
+  });
+  rerender(renderProps(1));
+  fireEvent.change(screen.getByRole('slider', { name: 'Input cutoff' }), {
+    target: { value: '500' },
+  });
+
+  expect(onConfigChange).toHaveBeenLastCalledWith(0, {
+    type: 'LowPass',
+    cutoffHz: expect.any(Number),
+    bypassed: true,
   });
 });
 

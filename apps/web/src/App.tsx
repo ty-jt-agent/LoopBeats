@@ -116,6 +116,7 @@ export function App({
   const [fxEditorOpen, setFxEditorOpen] = useState(false);
   const [fxEditorScope, setFxEditorScope] = useState<FxScope>(0);
   const [fxEditorFocusRequest, setFxEditorFocusRequest] = useState(0);
+  const [fxIntentResetKey, setFxIntentResetKey] = useState(0);
   const fxEditorOpener = useRef<HTMLButtonElement | null>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const selectedSettingsTab = useRef<HTMLButtonElement>(null);
@@ -376,6 +377,8 @@ export function App({
         );
       const outcome = await submission.outcome;
       sent = outcome.status === 'applied';
+      if (sent && target.kind === 'session')
+        setFxIntentResetKey((key) => key + 1);
       if (!sent)
         setRemovalError(
           `${outcome.status === 'failed' ? (outcome.error ?? 'The engine could not apply the command.') : 'Audio session changed before removal.'} Recordings remain unchanged. Retry ${target.kind === 'session' ? 'Reset session and confirm again' : `CLEAR on Track ${target.trackId + 1}`}.`,
@@ -661,6 +664,7 @@ export function App({
               snapshot={snapshot}
               enabled={ready && !switchPending}
               scope={fxEditorScope}
+              intentResetKey={fxIntentResetKey}
               focusRequest={fxEditorFocusRequest}
               onScopeChange={setFxEditorScope}
               onClose={() => setFxEditorOpen(false)}
