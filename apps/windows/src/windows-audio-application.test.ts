@@ -27,7 +27,7 @@ function emptyTrack() {
 }
 
 function snapshot(
-  status: 'ready' | 'interrupted' = 'ready',
+  status: 'ready' | 'interrupted' | 'error' = 'ready',
 ): AudioApplicationSnapshot {
   return {
     engine: {
@@ -39,7 +39,12 @@ function snapshot(
       inputLevel: 0,
       outputLevel: 0,
     },
-    host: { inputDeviceId: null, status, error: null, sampleRate: 48_000 },
+    host: {
+      inputDeviceId: null,
+      status,
+      error: status === 'error' ? 'A Windows audio device failed.' : null,
+      sampleRate: 48_000,
+    },
   };
 }
 
@@ -83,7 +88,7 @@ test('Windows adapter starts the native host and returns engine-applied workflow
           blockSequence: 3,
           submitted: args?.command,
         };
-      if (name === 'audio_host_stop') return undefined;
+      if (name === 'audio_host_stop') return 2;
       throw new Error(`Unexpected native command: ${name}`);
     },
   );
@@ -93,6 +98,9 @@ test('Windows adapter starts the native host and returns engine-applied workflow
   await app.start();
   expect(app.getApplicationSnapshot().host.status).toBe('ready');
   expect(app.getCapabilities().supportedFxScopes).toEqual([0, 3]);
+  expect(bridge.invoke).toHaveBeenCalledWith('audio_host_start', {
+    expectedGeneration: 0,
+  });
 
   const record = app.submit({ type: 'record', trackId: 0 });
   const monitor = app.submit({ type: 'monitoring', enabled: true });
@@ -134,10 +142,16 @@ test('Windows adapter starts the native host and returns engine-applied workflow
     expect.objectContaining({ status: 'applied' }),
   ]);
   expect(bridge.invoke).toHaveBeenCalledWith('audio_submit', {
+    command: { type: 'record', trackId: 0 },
+    expectedGeneration: 1,
+  });
+  expect(bridge.invoke).toHaveBeenCalledWith('audio_submit', {
     command: { type: 'set-track-gain', trackId: 1, gain: 0.35 },
+    expectedGeneration: 1,
   });
   expect(bridge.invoke).toHaveBeenCalledWith('audio_submit', {
     command: { type: 'set-master-gain', gain: 0.6 },
+    expectedGeneration: 1,
   });
 
   app.setFx(0, { type: 'LowPass', cutoffHz: 2_000, bypassed: false });
@@ -148,6 +162,7 @@ test('Windows adapter starts the native host and returns engine-applied workflow
       scope: 0,
       config: { type: 'LowPass', cutoffHz: 2_000, bypassed: false },
     },
+    expectedGeneration: 1,
   });
   rejectFx = true;
   app.setFx(0, { type: 'LowPass', cutoffHz: 1_200, bypassed: false });
@@ -179,7 +194,7 @@ test('interruption snapshots advance generation and explicit reinitialize reache
     }
     if (name === 'audio_snapshot')
       return { ...snapshot(hostSnapshot), generation: nativeGeneration };
-    if (name === 'audio_host_stop') return undefined;
+    if (name === 'audio_host_stop') return nativeGeneration + 1;
     throw new Error(`Unexpected native command: ${name}`);
   });
   const app = new WindowsAudioApplication();
@@ -191,6 +206,70 @@ test('interruption snapshots advance generation and explicit reinitialize reache
   expect(app.getSessionGeneration()).toBe(2);
   await app.reinitialize();
   expect(app.getApplicationSnapshot().host.status).toBe('ready');
+  expect(app.getSessionGeneration()).toBe(3);
+  await app.stop();
+});
+
+test('a delayed command keeps its originating generation across failure and recovery', async () => {
+  vi.useFakeTimers();
+  let nativeGeneration = 1;
+  let hostStatus: 'ready' | 'error' = 'ready';
+  let resolveOldCommand!: (outcome: {
+    commandId: number;
+    generation: number;
+    status: 'failed';
+  }) => void;
+  bridge.invoke.mockImplementation(async (name: string) => {
+    if (name === 'audio_capabilities')
+      return {
+        inputDeviceSelection: false,
+        outputDeviceSelection: false,
+        monitoring: true,
+        gainUpdateCoalescing: false,
+        supportedFxScopes: [0, 3],
+      };
+    if (name === 'audio_host_start') {
+      nativeGeneration = hostStatus === 'ready' ? 1 : 3;
+      hostStatus = 'ready';
+      return nativeGeneration;
+    }
+    if (name === 'audio_snapshot')
+      return {
+        ...snapshot(hostStatus),
+        generation: nativeGeneration,
+      };
+    if (name === 'audio_submit')
+      return new Promise((resolve) => {
+        resolveOldCommand = resolve;
+      });
+    if (name === 'audio_host_stop') return nativeGeneration + 1;
+    throw new Error(`Unexpected native command: ${name}`);
+  });
+
+  const app = new WindowsAudioApplication();
+  await Promise.resolve();
+  await app.start();
+  const oldCommand = app.submit({ type: 'record', trackId: 0 });
+  expect(oldCommand.status).toBe('accepted');
+  expect(bridge.invoke).toHaveBeenCalledWith('audio_submit', {
+    command: { type: 'record', trackId: 0 },
+    expectedGeneration: 1,
+  });
+
+  hostStatus = 'error';
+  nativeGeneration = 2;
+  await vi.advanceTimersByTimeAsync(50);
+  expect(app.getApplicationSnapshot().host.status).toBe('error');
+  await app.reinitialize();
+  expect(app.getSessionGeneration()).toBe(3);
+  expect(bridge.invoke).toHaveBeenLastCalledWith('audio_snapshot');
+
+  if (oldCommand.status !== 'accepted')
+    throw new Error(
+      'The old command should have been admitted by the adapter.',
+    );
+  resolveOldCommand({ commandId: 1, generation: 1, status: 'failed' });
+  expect((await oldCommand.outcome).status).toBe('failed');
   expect(app.getSessionGeneration()).toBe(3);
   await app.stop();
 });

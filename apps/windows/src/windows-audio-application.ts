@@ -53,6 +53,7 @@ export class WindowsAudioApplication implements AudioApplication {
   private capabilities = unavailableCapabilities;
   private generation = 0;
   private nextCommandId = 1;
+  private readonly pendingFx = [0, 0, 0, 0];
   private snapshotTimer: ReturnType<typeof setInterval> | undefined;
   private readonly listeners = new Set<() => void>();
 
@@ -79,7 +80,10 @@ export class WindowsAudioApplication implements AudioApplication {
       return { status: 'rejected', reason: 'unavailable' };
     const commandId = this.nextCommandId++;
     const generation = this.generation;
-    const outcome = invoke<AudioCommandOutcome>('audio_submit', { command })
+    const outcome = invoke<AudioCommandOutcome>('audio_submit', {
+      command,
+      expectedGeneration: generation,
+    })
       .then((result) => {
         this.generation = Math.max(this.generation, result.generation);
         return { ...result, commandId, generation: result.generation };
@@ -95,8 +99,11 @@ export class WindowsAudioApplication implements AudioApplication {
 
   setFx(scope: FxScope, config: FxConfig): void {
     if (this.snapshot.host.status !== 'ready') return;
+    const generation = this.generation;
+    this.updateFxPending(scope, 1);
     void invoke<AudioCommandOutcome>('audio_submit', {
       command: { type: 'set-fx', scope, config },
+      expectedGeneration: generation,
     })
       .then(async (outcome) => {
         if (outcome.status !== 'applied') {
@@ -115,13 +122,16 @@ export class WindowsAudioApplication implements AudioApplication {
           scope,
           error instanceof Error ? error.message : String(error),
         ),
-      );
+      )
+      .finally(() => this.updateFxPending(scope, -1));
   }
 
   async start(): Promise<void> {
     this.setStatus('starting', null);
     try {
-      this.generation = await invoke<number>('audio_host_start');
+      this.generation = await invoke<number>('audio_host_start', {
+        expectedGeneration: this.generation,
+      });
       this.setStatus('ready', null);
       this.startSnapshotPolling();
       await this.refreshSnapshot();
@@ -133,9 +143,11 @@ export class WindowsAudioApplication implements AudioApplication {
   async stop(): Promise<void> {
     this.setStatus('stopping', null);
     try {
-      await invoke('audio_host_stop');
+      const generation = await invoke<number>('audio_host_stop', {
+        expectedGeneration: this.generation,
+      });
       this.stopSnapshotPolling();
-      this.generation += 1;
+      this.generation = generation;
       this.snapshot = emptySnapshot();
       this.publish();
     } catch (error) {
@@ -164,7 +176,7 @@ export class WindowsAudioApplication implements AudioApplication {
         AudioApplicationSnapshot & { generation: number }
       >('audio_snapshot');
       this.generation = snapshot.generation;
-      this.snapshot = snapshot;
+      this.snapshot = this.withPendingFx(snapshot);
       this.publish();
     } catch (error) {
       this.fail(error);
@@ -182,6 +194,23 @@ export class WindowsAudioApplication implements AudioApplication {
     }
     this.snapshot = { ...this.snapshot, engine };
     this.publish();
+  }
+
+  private updateFxPending(scope: FxScope, delta: number) {
+    this.pendingFx[scope] = Math.max(0, this.pendingFx[scope] + delta);
+    this.snapshot = this.withPendingFx(this.snapshot);
+    this.publish();
+  }
+
+  private withPendingFx(snapshot: AudioApplicationSnapshot) {
+    const engine = { ...snapshot.engine };
+    engine.inputFxPending = this.pendingFx[0] > 0;
+    engine.playbackFxPending = [
+      this.pendingFx[1] > 0,
+      this.pendingFx[2] > 0,
+      this.pendingFx[3] > 0,
+    ];
+    return { ...snapshot, engine };
   }
 
   private setStatus(

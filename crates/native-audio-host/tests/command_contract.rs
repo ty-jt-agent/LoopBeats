@@ -99,6 +99,54 @@ fn commands_published_before_a_block_apply_fifo_with_actual_block_position() {
     }
 }
 
+#[test]
+fn command_from_an_old_generation_is_rejected_before_native_admission() {
+    let (mut adapter, mut processor) = Processor::controlled(32, 48_000);
+    let old_generation = adapter.session_generation();
+    adapter.restart();
+    let current_generation = adapter.session_generation();
+
+    assert_eq!(
+        adapter.submit_for_generation(AudioCommand::SetMonitoring(true), old_generation),
+        Err(RejectReason::StaleGeneration)
+    );
+    let accepted = adapter
+        .submit_for_generation(AudioCommand::SetMonitoring(true), current_generation)
+        .unwrap();
+    adapter.flush(8);
+    let mut output = [0.0; 1];
+    processor.process_block(&[], &mut output, HostEvent::None);
+    assert!(processor.snapshot().monitoring);
+    assert!(matches!(
+        adapter.take_outcome(),
+        Some(CommandOutcome::Applied { command_id, generation, .. })
+            if command_id == accepted.command_id && generation == current_generation
+    ));
+}
+
+#[test]
+fn outstanding_command_is_settled_when_stop_follows_persistent_capture_loss() {
+    let (mut adapter, mut processor) = Processor::controlled(32, 48_000);
+    let accepted = adapter.submit(AudioCommand::SetMonitoring(true)).unwrap();
+    adapter.flush(8);
+    let mut output = [0.0; 1];
+
+    for _ in 0..4 {
+        processor.process_block(&[0.0], &mut output, HostEvent::CaptureLost);
+        assert_eq!(adapter.take_outcome(), None);
+    }
+
+    adapter.shutdown();
+    processor.settle_pending_after_failure();
+    assert_eq!(
+        adapter.take_outcome(),
+        Some(CommandOutcome::Stale {
+            command_id: accepted.command_id,
+            generation: accepted.generation,
+        })
+    );
+}
+
 fn shared_case(name: &str) -> Vec<Vec<&'static str>> {
     SHARED_CONFORMANCE_CASES
         .lines()

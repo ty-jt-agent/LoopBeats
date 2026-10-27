@@ -49,6 +49,8 @@ jobs:
         run: |
           cargo check --locked --all-targets -p windows-audio-host --target x86_64-pc-windows-msvc
           cargo test --locked -p windows-audio-host
+      - name: Test Windows bridge handlers
+        run: cargo test --locked --manifest-path apps/windows/src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

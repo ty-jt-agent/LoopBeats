@@ -44,6 +44,7 @@ pub enum RejectReason {
     Unavailable,
     Overloaded,
     InvalidCommand,
+    StaleGeneration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -401,11 +402,34 @@ impl Processor {
 
 impl CommandAdapter {
     pub fn submit(&mut self, command: AudioCommand) -> Result<AcceptedCommand, RejectReason> {
+        self.submit_checked(command, None)
+    }
+
+    /// Admit a command only if it originated in the currently observed session.
+    /// The accepted envelope keeps that same generation if a concurrent host
+    /// fault advances the session immediately after this check.
+    pub fn submit_for_generation(
+        &mut self,
+        command: AudioCommand,
+        expected_generation: u64,
+    ) -> Result<AcceptedCommand, RejectReason> {
+        self.submit_checked(command, Some(expected_generation))
+    }
+
+    fn submit_checked(
+        &mut self,
+        command: AudioCommand,
+        expected_generation: Option<u64>,
+    ) -> Result<AcceptedCommand, RejectReason> {
         let Some(_publisher) = PublisherGuard::try_new(&self.shared.publisher_state) else {
             return Err(RejectReason::Unavailable);
         };
         if !self.shared.active.load(Ordering::Acquire) {
             return Err(RejectReason::Unavailable);
+        }
+        let generation = self.shared.generation.load(Ordering::Acquire);
+        if expected_generation.is_some_and(|expected| expected != generation) {
+            return Err(RejectReason::StaleGeneration);
         }
         if !is_valid(command) {
             return Err(RejectReason::InvalidCommand);
@@ -421,7 +445,7 @@ impl CommandAdapter {
         }
         let accepted = AcceptedCommand {
             command_id: self.shared.next_command_id.fetch_add(1, Ordering::Relaxed),
-            generation: self.shared.generation.load(Ordering::Acquire),
+            generation,
         };
         let envelope = Envelope { accepted, command };
         if let Some(previous) = self.staging.back_mut() {
