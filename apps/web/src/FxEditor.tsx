@@ -52,6 +52,7 @@ export function FxEditor({
   snapshot,
   enabled,
   scope,
+  intentResetKey,
   focusRequest,
   onScopeChange,
   onClose,
@@ -61,6 +62,7 @@ export function FxEditor({
   snapshot: AudioSnapshot;
   enabled: boolean;
   scope: FxScope;
+  intentResetKey: number;
   focusRequest: number;
   onScopeChange: (scope: FxScope) => void;
   onClose: () => void;
@@ -90,6 +92,9 @@ export function FxEditor({
   );
   const acknowledgedConfig = slot?.config ?? defaultConfig;
   const desiredConfigs = useRef(new Map<FxScope, FxConfig>());
+  useLayoutEffect(() => {
+    desiredConfigs.current.clear();
+  }, [intentResetKey]);
   useEffect(() => {
     const desired = desiredConfigs.current.get(scope);
     if (

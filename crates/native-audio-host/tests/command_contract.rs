@@ -40,6 +40,53 @@ fn applies_an_existing_effect_at_the_render_boundary_and_reports_its_state() {
 }
 
 #[test]
+fn retained_recording_survives_device_failure_export_and_host_restore_exactly() {
+    let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
+    let record = adapter.submit(AudioCommand::Record(0)).unwrap();
+    adapter.flush(1);
+    let mut output = [0.0; 4];
+    processor.process_block(&[0.125, -0.25, 0.5, -0.75], &mut output, HostEvent::None);
+    assert_eq!(
+        adapter.take_outcome().unwrap().command_id(),
+        record.command_id
+    );
+
+    let finish = adapter.submit(AudioCommand::Record(0)).unwrap();
+    adapter.flush(1);
+    processor.process_block(&[0.0; 4], &mut output, HostEvent::None);
+    assert_eq!(
+        adapter.take_outcome().unwrap().command_id(),
+        finish.command_id
+    );
+
+    let overdub = adapter.submit(AudioCommand::Record(0)).unwrap();
+    adapter.flush(1);
+    processor.process_block(&[0.01, -0.02, 0.03, -0.04], &mut output, HostEvent::None);
+    assert_eq!(
+        adapter.take_outcome().unwrap().command_id(),
+        overdub.command_id
+    );
+    processor.process_block(&[], &mut [], HostEvent::DeviceFailed);
+
+    let retained = processor.export_retained_session().unwrap();
+    assert_eq!(retained.tracks[0], [0.135, -0.27, 0.53, -0.79]);
+    assert_eq!(retained.metadata.cycle_length, 4);
+    let (mut recovered_adapter, mut recovered) =
+        Processor::controlled_with_session(16, 48_000, Some(&retained)).unwrap();
+    assert_eq!(recovered.snapshot().tracks[0].state, TrackState::Stopped);
+
+    let play = recovered_adapter.submit(AudioCommand::Play(0)).unwrap();
+    recovered_adapter.flush(1);
+    recovered.process_block(&[0.0; 4], &mut output, HostEvent::None);
+
+    assert_eq!(
+        recovered_adapter.take_outcome().unwrap().command_id(),
+        play.command_id
+    );
+    assert_eq!(output, [0.135, -0.27, 0.53, -0.79]);
+}
+
+#[test]
 fn published_snapshots_show_applied_state_and_confirmed_capture_interruption() {
     let (mut adapter, mut processor) = Processor::controlled(16, 48_000);
     let snapshots = processor.snapshot_feed();

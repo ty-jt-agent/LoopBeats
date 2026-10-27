@@ -1,7 +1,7 @@
 use super::*;
 use crossbeam_queue::ArrayQueue;
 use loop_engine::{EngineSnapshot, TrackState};
-use native_audio_host::{CommandAdapter, HostEvent, Processor};
+use native_audio_host::{CommandAdapter, HostEvent, Processor, RetainedSession};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -58,19 +58,38 @@ pub struct MonitoringHost {
     snapshot_feed: Arc<ArrayQueue<EngineSnapshot>>,
     latest_engine_snapshot: Option<EngineSnapshot>,
     rendered_frames: Arc<AtomicU64>,
+    recovery_session: Arc<std::sync::Mutex<Option<RetainedSession>>>,
     stopped: bool,
 }
 
 impl MonitoringHost {
     pub fn start(config: HostConfig) -> Result<Self, HostError> {
+        Self::start_with_session(config, None)
+    }
+
+    pub fn start_with_session(
+        config: HostConfig,
+        retained_session: Option<&RetainedSession>,
+    ) -> Result<Self, HostError> {
         let (capture_id, render_id, capture_rate, render_rate) = resolve_endpoints(&config)?;
         let capacity = config
             .engine_capacity_frames
-            .unwrap_or(render_rate as usize * 60);
+            .unwrap_or(render_rate as usize * 60)
+            .max(retained_session.map_or(0, |session| {
+                session
+                    .metadata
+                    .tracks
+                    .iter()
+                    .map(|track| track.length)
+                    .max()
+                    .unwrap_or(0)
+            }));
         if capacity == 0 {
             return Err(HostError::InvalidConfiguration);
         }
-        let (commands, processor) = Processor::controlled(capacity, render_rate);
+        let (commands, processor) =
+            Processor::controlled_with_session(capacity, render_rate, retained_session)
+                .map_err(HostError::SessionRecovery)?;
         let snapshot_feed = processor.snapshot_feed();
         let rendered_frames = processor.rendered_frames_feed();
         let signals = Arc::new(HostSignals::default());
@@ -111,6 +130,8 @@ impl MonitoringHost {
         let render_stop = Arc::clone(&stop);
         let render_failure_signals = Arc::clone(&signals);
         let render_failure_stop = Arc::clone(&stop);
+        let recovery_session = Arc::new(std::sync::Mutex::new(None));
+        let render_recovery_session = Arc::clone(&recovery_session);
         let render_input = Arc::clone(&input);
         let clock_correction_ppm = Arc::new(AtomicI32::new(0));
         let render_clock_correction = Arc::clone(&clock_correction_ppm);
@@ -139,6 +160,11 @@ impl MonitoringHost {
                     eprintln!("WASAPI render stopped: {error}");
                 } else {
                     processor.settle_pending_after_failure();
+                }
+                if render_failure_signals.device_failed() {
+                    if let Ok(mut retained) = render_recovery_session.lock() {
+                        *retained = processor.export_retained_session();
+                    }
                 }
             }) {
             Ok(thread) => thread,
@@ -185,6 +211,7 @@ impl MonitoringHost {
             snapshot_feed,
             latest_engine_snapshot: None,
             rendered_frames,
+            recovery_session,
             stopped: false,
         })
     }
@@ -207,6 +234,10 @@ impl MonitoringHost {
 
     pub fn rendered_frames(&self) -> u64 {
         self.rendered_frames.load(Ordering::Acquire)
+    }
+
+    pub fn take_recovery_session(&mut self) -> Option<RetainedSession> {
+        self.recovery_session.lock().ok()?.take()
     }
 
     pub fn diagnostics(&self) -> HostDiagnostics {

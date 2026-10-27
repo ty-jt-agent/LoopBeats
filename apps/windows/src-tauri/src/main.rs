@@ -3,10 +3,10 @@
 #[cfg(windows)]
 mod windows_app {
     use loop_engine::{FxConfig, PlaybackMode, TrackState};
-    use native_audio_host::{AudioCommand, CommandAdapter, CommandOutcome};
+    use native_audio_host::{AudioCommand, CommandAdapter, CommandOutcome, RetainedSession};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::State;
     use windows_audio_host::{HostConfig, MonitoringHost};
@@ -23,6 +23,7 @@ mod windows_app {
     struct HostLifecycle {
         host: Option<MonitoringHost>,
         generation: u64,
+        recovery_session: Option<RetainedSession>,
     }
 
     #[derive(Serialize)]
@@ -129,7 +130,7 @@ mod windows_app {
     #[tauri::command]
     fn audio_host_start(
         expected_generation: u64,
-        state: State<'_, HostState>,
+        state: State<'_, Arc<HostState>>,
     ) -> Result<u64, String> {
         let mut lifecycle = state
             .lifecycle
@@ -142,12 +143,17 @@ mod windows_app {
                 let mut failed_host = lifecycle.host.take().unwrap();
                 failed_host.shutdown();
                 settle_host_commands(&mut failed_host, &state);
+                lifecycle.recovery_session = failed_host.take_recovery_session();
                 let next_generation = current_generation.saturating_add(1);
-                let mut host = MonitoringHost::start(HostConfig::default())
-                    .map_err(|error| error.to_string())?;
+                let start = MonitoringHost::start_with_session(
+                    HostConfig::default(),
+                    lifecycle.recovery_session.as_ref(),
+                );
+                let mut host = start.map_err(|error| error.to_string())?;
                 advance_host_to(&mut host, next_generation);
                 let generation = host.commands.session_generation();
                 lifecycle.generation = generation;
+                lifecycle.recovery_session = None;
                 lifecycle.host = Some(host);
                 return Ok(generation);
             }
@@ -166,11 +172,15 @@ mod windows_app {
             return Ok(generation);
         }
         require_generation(expected_generation, lifecycle.generation)?;
-        let mut host =
-            MonitoringHost::start(HostConfig::default()).map_err(|error| error.to_string())?;
+        let mut host = MonitoringHost::start_with_session(
+            HostConfig::default(),
+            lifecycle.recovery_session.as_ref(),
+        )
+        .map_err(|error| error.to_string())?;
         advance_host_to(&mut host, lifecycle.generation);
         let generation = host.commands.session_generation();
         lifecycle.generation = generation;
+        lifecycle.recovery_session = None;
         lifecycle.host = Some(host);
         Ok(generation)
     }
@@ -178,7 +188,7 @@ mod windows_app {
     #[tauri::command]
     fn audio_host_stop(
         expected_generation: u64,
-        state: State<'_, HostState>,
+        state: State<'_, Arc<HostState>>,
     ) -> Result<u64, String> {
         let mut lifecycle = state
             .lifecycle
@@ -194,15 +204,37 @@ mod windows_app {
             host.shutdown();
             settle_host_commands(&mut host, &state);
         }
+        lifecycle.recovery_session = None;
         lifecycle.generation = current_generation.saturating_add(1);
         Ok(lifecycle.generation)
     }
 
     #[tauri::command]
-    fn audio_submit(
+    async fn audio_submit(
         command: UiCommand,
         expected_generation: u64,
-        state: State<'_, HostState>,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<serde_json::Value, String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            audio_submit_blocking(command, expected_generation, state.as_ref())
+        })
+        .await
+        .map_err(|error| format!("audio command worker failed: {error}"))?
+    }
+
+    async fn run_host_call<T: Send + 'static>(
+        operation: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, String> {
+        tauri::async_runtime::spawn_blocking(operation)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    fn audio_submit_blocking(
+        command: UiCommand,
+        expected_generation: u64,
+        state: &HostState,
     ) -> Result<serde_json::Value, String> {
         let command = AudioCommand::try_from(command)?;
         let _submission = state
@@ -377,7 +409,7 @@ mod windows_app {
     }
 
     #[tauri::command]
-    fn audio_snapshot(state: State<'_, HostState>) -> Result<serde_json::Value, String> {
+    fn audio_snapshot(state: State<'_, Arc<HostState>>) -> Result<serde_json::Value, String> {
         let mut lifecycle = state
             .lifecycle
             .lock()
@@ -504,7 +536,7 @@ mod windows_app {
 
     pub fn run() {
         tauri::Builder::default()
-            .manage(HostState::default())
+            .manage(Arc::new(HostState::default()))
             .invoke_handler(tauri::generate_handler![
                 audio_capabilities,
                 audio_host_start,
@@ -538,6 +570,27 @@ mod windows_app {
             let (mut commands, _processor) = native_audio_host::Processor::controlled(16, 48_000);
             advance_commands_to(&mut commands, 4);
             assert_eq!(commands.session_generation(), 4);
+        }
+
+        #[test]
+        fn waiting_command_worker_does_not_block_later_bridge_dispatch() {
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let waiting = tauri::async_runtime::spawn(run_host_call(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }));
+            started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("blocked command worker starts");
+
+            let later_result = tauri::async_runtime::block_on(run_host_call(|| 42))
+                .expect("a later bridge call runs while the first waits");
+            assert_eq!(later_result, 42);
+            release_tx.send(()).unwrap();
+            tauri::async_runtime::block_on(waiting)
+                .expect("waiting command worker joins")
+                .expect("waiting command completes");
         }
     }
 }

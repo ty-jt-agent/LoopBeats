@@ -456,6 +456,8 @@ pub enum HostError {
     ThreadStart(String),
     #[error("invalid audio host capacity configuration")]
     InvalidConfiguration,
+    #[error("retained audio could not be restored: {0}")]
+    SessionRecovery(String),
 }
 
 /// Pick the first endpoint-supported period at or above the minimum. WASAPI's

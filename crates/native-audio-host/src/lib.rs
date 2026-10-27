@@ -4,7 +4,9 @@
 //! and is the only type that mutates it while rendering. The queues are allocated
 //! at construction; render-block work uses bounded, allocation-free operations.
 use crossbeam_queue::ArrayQueue;
-use loop_engine::{EngineSnapshot, FxConfig, LoopEngine, PlaybackMode, TrackState};
+use loop_engine::{
+    EngineSnapshot, FxConfig, ImportMetadata, ImportTrack, LoopEngine, PlaybackMode, TrackState,
+};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -88,6 +90,13 @@ pub enum HostEvent {
     DeviceFailed,
 }
 
+/// A stopped, in-memory copy of retained engine audio for device stream recovery.
+/// It is built and restored outside the render callback.
+pub struct RetainedSession {
+    pub metadata: ImportMetadata,
+    pub tracks: [Vec<f32>; 2],
+}
+
 #[derive(Clone, Copy)]
 struct Envelope {
     accepted: AcceptedCommand,
@@ -134,6 +143,93 @@ impl Processor {
             DEFAULT_ACK_CAPACITY,
             DEFAULT_BLOCK_BUDGET,
         )
+    }
+
+    pub fn controlled_with_session(
+        samples: usize,
+        sample_rate: u32,
+        session: Option<&RetainedSession>,
+    ) -> Result<(CommandAdapter, Self), String> {
+        let (commands, mut processor) = Self::controlled(samples, sample_rate);
+        if let Some(session) = session {
+            processor.restore_retained_session(session)?;
+        }
+        Ok((commands, processor))
+    }
+
+    /// Copy stopped recordings for an explicit device recovery operation.
+    /// This performs bounded reads but may allocate; callers must use it only
+    /// after the render loop has stopped processing.
+    pub fn export_retained_session(&self) -> Option<RetainedSession> {
+        let snapshot = self.engine.snapshot();
+        if snapshot
+            .tracks
+            .iter()
+            .any(|track| matches!(track.state, TrackState::Recording | TrackState::Overdubbing))
+        {
+            return None;
+        }
+        let metadata = ImportMetadata {
+            fx: snapshot.fx.map(|slot| slot.config),
+            cycle_length: snapshot.cycle_length_samples,
+            master_gain: snapshot.master_gain,
+            tracks: snapshot.tracks.map(|track| ImportTrack {
+                length: track.length_samples,
+                mode: track.mode,
+                gain: track.gain,
+                muted: track.muted,
+            }),
+        };
+        let mut tracks = [Vec::new(), Vec::new()];
+        for (track_id, audio) in tracks.iter_mut().enumerate() {
+            let track = snapshot.tracks[track_id];
+            audio.reserve(track.length_samples);
+            let mut offset = 0;
+            while offset < track.length_samples {
+                let count = (track.length_samples - offset).min(2048);
+                let mut block = vec![0.0; count];
+                if !self.engine.read_recording(
+                    track_id,
+                    self.engine.recording_revision(track_id),
+                    offset,
+                    &mut block,
+                ) {
+                    return None;
+                }
+                audio.extend_from_slice(&block);
+                offset += count;
+            }
+        }
+        Some(RetainedSession { metadata, tracks })
+    }
+
+    fn restore_retained_session(&mut self, session: &RetainedSession) -> Result<(), String> {
+        if session.tracks.each_ref().map(|samples| samples.len())
+            != session.metadata.tracks.map(|track| track.length)
+        {
+            return Err("retained audio metadata does not match its sample data".into());
+        }
+        let revision = self.engine.command_revision();
+        if !self.engine.begin_import(session.metadata, revision) {
+            return Err("retained audio is incompatible with the recovered device".into());
+        }
+        for (track_id, samples) in session.tracks.iter().enumerate() {
+            for (block_index, block) in samples.chunks(2048).enumerate() {
+                if !self
+                    .engine
+                    .write_import(track_id, block_index * 2048, block)
+                {
+                    self.engine.cancel_import();
+                    return Err("retained audio could not be restored".into());
+                }
+            }
+        }
+        if !self.engine.commit_import() {
+            self.engine.cancel_import();
+            return Err("retained audio could not be committed".into());
+        }
+        self.publish_snapshot();
+        Ok(())
     }
 
     pub fn controlled_with_limits(
