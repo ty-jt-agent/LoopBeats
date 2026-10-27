@@ -2,10 +2,13 @@
 
 #[cfg(windows)]
 mod windows_app {
-    use loop_engine::{FxConfig, PlaybackMode, TrackState};
-    use native_audio_host::{AudioCommand, CommandAdapter, CommandOutcome, RetainedSession};
+    use loop_engine::{FxConfig, ImportMetadata, ImportTrack, PlaybackMode, TrackState};
+    use native_audio_host::{
+        AudioCommand, CommandAdapter, CommandOutcome, RetainedSession, SessionTransfer,
+    };
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::State;
@@ -17,6 +20,9 @@ mod windows_app {
         submit_gate: Mutex<()>,
         pending: Mutex<HashMap<u64, u64>>,
         terminal: Mutex<HashMap<u64, serde_json::Value>>,
+        session_transfer: Mutex<TransferOperation>,
+        transfer_gate: Mutex<()>,
+        next_transfer_id: AtomicU64,
     }
 
     #[derive(Default)]
@@ -24,6 +30,21 @@ mod windows_app {
         host: Option<MonitoringHost>,
         generation: u64,
         recovery_session: Option<RetainedSession>,
+    }
+
+    #[derive(Default)]
+    enum TransferOperation {
+        #[default]
+        Idle,
+        Export {
+            token: u64,
+            transfer: SessionTransfer,
+            revisions: [u32; 2],
+        },
+        Import {
+            token: u64,
+            transfer: SessionTransfer,
+        },
     }
 
     #[derive(Serialize)]
@@ -140,6 +161,8 @@ mod windows_app {
             let current_generation = host.commands.session_generation();
             require_generation(expected_generation, current_generation)?;
             if host.diagnostics().device_failed {
+                host.commands.session_transfer().abort_pending();
+                abort_session_transfer(&state);
                 let mut failed_host = lifecycle.host.take().unwrap();
                 failed_host.shutdown();
                 settle_host_commands(&mut failed_host, &state);
@@ -200,6 +223,10 @@ mod windows_app {
             .map(|host| host.commands.session_generation())
             .unwrap_or(lifecycle.generation);
         require_generation(expected_generation, current_generation)?;
+        if let Some(host) = lifecycle.host.as_ref() {
+            host.commands.session_transfer().abort_pending();
+        }
+        abort_session_transfer(state.inner());
         if let Some(mut host) = lifecycle.host.take() {
             host.shutdown();
             settle_host_commands(&mut host, &state);
@@ -216,11 +243,9 @@ mod windows_app {
         state: State<'_, Arc<HostState>>,
     ) -> Result<serde_json::Value, String> {
         let state = Arc::clone(state.inner());
-        run_host_call(move || {
-            audio_submit_blocking(command, expected_generation, state.as_ref())
-        })
-        .await
-        .map_err(|error| format!("audio command worker failed: {error}"))?
+        run_host_call(move || audio_submit_blocking(command, expected_generation, state.as_ref()))
+            .await
+            .map_err(|error| format!("audio command worker failed: {error}"))?
     }
 
     async fn run_host_call<T: Send + 'static>(
@@ -504,6 +529,10 @@ mod windows_app {
             },
             "host": { "inputDeviceId": null, "status": status, "error": host_error, "sampleRate": diagnostics.render.actual_sample_rate, "captureInterruption": capture_interruption },
         });
+        if diagnostics.device_failed {
+            host.commands.session_transfer().abort_pending();
+            abort_session_transfer(state.inner());
+        }
         lifecycle.generation = generation;
         Ok(response)
     }
@@ -516,6 +545,365 @@ mod windows_app {
                 "fx": std::array::from_fn::<_, 4, _>(|_| serde_json::json!({ "config": { "type": "None" }, "transitioning": false, "removing": false })) },
             "host": { "inputDeviceId": null, "status": "idle", "error": null, "sampleRate": null },
         })
+    }
+
+    fn fx_json(config: FxConfig) -> serde_json::Value {
+        match config {
+            FxConfig::None => serde_json::json!({ "type": "None" }),
+            FxConfig::LowPass {
+                cutoff_hz,
+                bypassed,
+            } => serde_json::json!({
+                "type": "LowPass", "cutoffHz": cutoff_hz, "bypassed": bypassed
+            }),
+        }
+    }
+
+    fn export_manifest(sample_rate: u32, metadata: ImportMetadata) -> serde_json::Value {
+        serde_json::json!({
+            "format": "LoopBeatsSession", "version": 2, "sampleRate": sample_rate,
+            "cycleLengthSamples": metadata.cycle_length, "masterGain": metadata.master_gain,
+            "inputFx": fx_json(metadata.fx[0]), "masterFx": fx_json(metadata.fx[3]),
+            "tracks": metadata.tracks.iter().enumerate().map(|(id, track)| serde_json::json!({
+                "id": id, "mode": if track.mode == PlaybackMode::Loop { "Loop" } else { "OneShot" },
+                "gain": track.gain, "muted": track.muted, "lengthSamples": track.length,
+                "audioPath": (track.length > 0).then(|| format!("tracks/{id}.wav")),
+                "fx": fx_json(metadata.fx[id + 1]),
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TransferTrack {
+        id: usize,
+        mode: String,
+        gain: f32,
+        muted: bool,
+        length_samples: usize,
+        audio_path: Option<String>,
+        fx: FxWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TransferManifest {
+        format: String,
+        version: u8,
+        sample_rate: u32,
+        cycle_length_samples: usize,
+        master_gain: f32,
+        input_fx: FxWire,
+        master_fx: FxWire,
+        tracks: [TransferTrack; 2],
+    }
+
+    fn import_metadata(manifest: TransferManifest) -> Result<(u32, ImportMetadata), String> {
+        if manifest.format != "LoopBeatsSession" || manifest.version != 2 {
+            return Err("unsupported session format".into());
+        }
+        let mut tracks = [ImportTrack {
+            length: 0,
+            mode: PlaybackMode::Loop,
+            gain: 1.0,
+            muted: false,
+        }; 2];
+        let mut fx = [FxConfig::None; 4];
+        fx[0] = manifest.input_fx.into();
+        fx[3] = manifest.master_fx.into();
+        for (id, track) in manifest.tracks.into_iter().enumerate() {
+            if track.id != id {
+                return Err("invalid track ordering".into());
+            }
+            let expected_path = (track.length_samples > 0).then(|| format!("tracks/{id}.wav"));
+            if track.audio_path != expected_path {
+                return Err("track audio path does not match its length".into());
+            }
+            tracks[id] = ImportTrack {
+                length: track.length_samples,
+                mode: match track.mode.as_str() {
+                    "Loop" => PlaybackMode::Loop,
+                    "OneShot" => PlaybackMode::OneShot,
+                    _ => return Err("invalid playback mode".into()),
+                },
+                gain: track.gain,
+                muted: track.muted,
+            };
+            fx[id + 1] = track.fx.into();
+        }
+        Ok((
+            manifest.sample_rate,
+            ImportMetadata {
+                fx,
+                cycle_length: manifest.cycle_length_samples,
+                master_gain: manifest.master_gain,
+                tracks,
+            },
+        ))
+    }
+
+    fn current_transfer(state: &HostState) -> Result<SessionTransfer, String> {
+        state
+            .lifecycle
+            .lock()
+            .map_err(|_| "audio host state unavailable")?
+            .host
+            .as_ref()
+            .map(|host| host.commands.session_transfer())
+            .ok_or_else(|| "audio host is unavailable".into())
+    }
+
+    fn abort_session_transfer(state: &HostState) {
+        if let Ok(mut operation) = state.session_transfer.lock() {
+            match &*operation {
+                TransferOperation::Export { transfer, .. }
+                | TransferOperation::Import { transfer, .. } => transfer.abort_pending(),
+                TransferOperation::Idle => {}
+            }
+            *operation = TransferOperation::Idle;
+        }
+    }
+
+    #[tauri::command]
+    async fn audio_session_export_begin(
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<serde_json::Value, String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let transfer = current_transfer(state.as_ref())?;
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            if !matches!(
+                &*state
+                    .session_transfer
+                    .lock()
+                    .map_err(|_| "session transfer unavailable")?,
+                TransferOperation::Idle
+            ) {
+                return Err("another session transfer is already active".into());
+            }
+            let (rate, metadata, revisions) = transfer.begin_export()?;
+            let token = state
+                .next_transfer_id
+                .fetch_add(1, Ordering::Relaxed)
+                .max(1);
+            *state
+                .session_transfer
+                .lock()
+                .map_err(|_| "session transfer unavailable")? = TransferOperation::Export {
+                token,
+                transfer,
+                revisions,
+            };
+            Ok(serde_json::json!({ "token": token, "manifest": export_manifest(rate, metadata) }))
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    async fn audio_session_export_read(
+        token: u64,
+        track: usize,
+        offset: usize,
+        frames: usize,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<Vec<f32>, String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            let (transfer, revision) = match &*state
+                .session_transfer
+                .lock()
+                .map_err(|_| "session transfer unavailable")?
+            {
+                TransferOperation::Export {
+                    token: active,
+                    transfer,
+                    revisions,
+                } if *active == token && track < 2 => (transfer.clone(), revisions[track]),
+                _ => return Err("stale session export operation".into()),
+            };
+            transfer.read_export_chunk(track, revision, offset, frames)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    async fn audio_session_export_end(
+        token: u64,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<(), String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            let mut operation = state.session_transfer.lock().map_err(|_| "session transfer unavailable")?;
+            if matches!(&*operation, TransferOperation::Export { token: active, .. } if *active == token) { *operation = TransferOperation::Idle; Ok(()) }
+            else { Err("stale session export operation".into()) }
+        }).await.map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    async fn audio_session_import_begin(
+        manifest: TransferManifest,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<u64, String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let (rate, metadata) = import_metadata(manifest)?;
+            let transfer = current_transfer(state.as_ref())?;
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            let current_rate = state
+                .lifecycle
+                .lock()
+                .map_err(|_| "audio host state unavailable")?
+                .host
+                .as_ref()
+                .map(|host| host.diagnostics().render.actual_sample_rate)
+                .ok_or_else(|| "audio host is unavailable".to_string())?;
+            if rate != current_rate {
+                return Err("session sample rate does not match the Windows engine".into());
+            }
+            if !matches!(
+                &*state
+                    .session_transfer
+                    .lock()
+                    .map_err(|_| "session transfer unavailable")?,
+                TransferOperation::Idle
+            ) {
+                return Err("another session transfer is already active".into());
+            }
+            transfer.begin_import(metadata)?;
+            let token = state
+                .next_transfer_id
+                .fetch_add(1, Ordering::Relaxed)
+                .max(1);
+            *state
+                .session_transfer
+                .lock()
+                .map_err(|_| "session transfer unavailable")? =
+                TransferOperation::Import { token, transfer };
+            Ok(token)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    async fn audio_session_import_write(
+        token: u64,
+        track: usize,
+        offset: usize,
+        samples: Vec<f32>,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<(), String> {
+        if samples.is_empty() || samples.len() > 2048 {
+            return Err("session transfer chunks must contain 1 to 2,048 frames".into());
+        }
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            let transfer = match &*state
+                .session_transfer
+                .lock()
+                .map_err(|_| "session transfer unavailable")?
+            {
+                TransferOperation::Import {
+                    token: active,
+                    transfer,
+                } if *active == token => transfer.clone(),
+                _ => return Err("stale session import operation".into()),
+            };
+            transfer.write_import_chunk(track, offset, &samples)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    async fn audio_session_import_commit(
+        token: u64,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<(), String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            let transfer = match &*state
+                .session_transfer
+                .lock()
+                .map_err(|_| "session transfer unavailable")?
+            {
+                TransferOperation::Import {
+                    token: active,
+                    transfer,
+                } if *active == token => transfer.clone(),
+                _ => return Err("stale session import operation".into()),
+            };
+            transfer.commit_import()?;
+            *state
+                .session_transfer
+                .lock()
+                .map_err(|_| "session transfer unavailable")? = TransferOperation::Idle;
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    async fn audio_session_cancel(
+        token: u64,
+        state: State<'_, Arc<HostState>>,
+    ) -> Result<(), String> {
+        let state = Arc::clone(state.inner());
+        run_host_call(move || {
+            let _gate = state
+                .transfer_gate
+                .lock()
+                .map_err(|_| "session transfer unavailable")?;
+            let transfer = {
+                let mut operation = state
+                    .session_transfer
+                    .lock()
+                    .map_err(|_| "session transfer unavailable")?;
+                match &*operation {
+                    TransferOperation::Export { token: active, .. } if *active == token => {
+                        *operation = TransferOperation::Idle;
+                        return Ok(());
+                    }
+                    TransferOperation::Import {
+                        token: active,
+                        transfer,
+                    } if *active == token => {
+                        let transfer = transfer.clone();
+                        *operation = TransferOperation::Idle;
+                        transfer
+                    }
+                    _ => return Err("stale session transfer operation".into()),
+                }
+            };
+            transfer.cancel_import()
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     fn host_status(device_failed: bool, interrupted: bool) -> &'static str {
@@ -542,7 +930,14 @@ mod windows_app {
                 audio_host_start,
                 audio_host_stop,
                 audio_submit,
-                audio_snapshot
+                audio_snapshot,
+                audio_session_export_begin,
+                audio_session_export_read,
+                audio_session_export_end,
+                audio_session_import_begin,
+                audio_session_import_write,
+                audio_session_import_commit,
+                audio_session_cancel
             ])
             .run(tauri::generate_context!())
             .expect("failed to run LoopBeats Windows shell");
