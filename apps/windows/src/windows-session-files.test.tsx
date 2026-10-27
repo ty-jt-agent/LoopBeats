@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type {
   AudioApplication,
   AudioApplicationSnapshot,
@@ -44,15 +44,35 @@ const manifest: ExportManifest = {
   ],
 };
 
-function audioApplication() {
+function audioApplication(hasRecording = false) {
   return {
     getApplicationSnapshot: () =>
       ({
-        engine: { tracks: [{ lengthSamples: 0 }, { lengthSamples: 0 }] },
+        engine: {
+          tracks: [
+            { lengthSamples: hasRecording ? 1 : 0 },
+            { lengthSamples: 0 },
+          ],
+        },
         host: { sampleRate: 48_000 },
       }) as unknown as AudioApplicationSnapshot,
   } as AudioApplication;
 }
+
+beforeEach(() => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.open = true;
+    },
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.open = false;
+    },
+  });
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -150,4 +170,47 @@ test('Windows import validates with the shared parser before native staging and 
       'Session imported. Recordings are stopped; monitoring is off.',
     ),
   ).toBeTruthy();
+});
+
+test('declining replacement cancels staged native import and releases its operation', async () => {
+  const zip = await assembleSession(
+    manifest,
+    async () => new Float32Array([0.125, -0.375]),
+    () => undefined,
+    () => undefined,
+  );
+  native.invoke.mockImplementation(async (name: string) => {
+    if (name === 'audio_session_import_begin') return 27;
+    if (name === 'audio_session_import_write') return undefined;
+    if (name === 'audio_session_cancel') return undefined;
+    throw new Error(`Unexpected command ${name}`);
+  });
+  render(
+    <WindowsSessionFiles
+      audio={audioApplication(true)}
+      exportEnabled
+      importEnabled
+      onBusy={() => undefined}
+      onStatus={() => undefined}
+    />,
+  );
+  const file = new File([await zip.arrayBuffer()], 'session.zip', {
+    type: 'application/zip',
+  });
+  fireEvent.change(screen.getByLabelText('Load ZIP'), {
+    target: { files: [file] },
+  });
+
+  await screen.findByRole('heading', { name: 'Replace current session?' });
+  fireEvent.click(screen.getByRole('button', { name: /^Cancel$/ }));
+  await waitFor(() =>
+    expect(native.invoke).toHaveBeenCalledWith('audio_session_cancel', {
+      token: 27,
+    }),
+  );
+  expect(native.invoke).not.toHaveBeenCalledWith(
+    'audio_session_import_commit',
+    { token: 27 },
+  );
+  expect(screen.getByText('Import canceled.')).toBeTruthy();
 });

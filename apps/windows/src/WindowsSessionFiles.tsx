@@ -282,12 +282,12 @@ export function WindowsSessionFiles({
         setMessage(
           'Session imported. Recordings are stopped; monitoring is off.',
         );
-      } catch (failure) {
-        if (token !== undefined)
+      } finally {
+        if (token !== undefined) {
           await invoke('audio_session_cancel', { token }).catch(
             () => undefined,
           );
-        throw failure;
+        }
       }
     });
 
