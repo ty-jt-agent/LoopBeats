@@ -389,7 +389,6 @@ mod windows_app {
             return Ok(idle_snapshot(lifecycle.generation));
         };
         let generation = host.commands.session_generation();
-        lifecycle.generation = generation;
         let diagnostics = host.diagnostics();
         let interrupted = diagnostics
             .pending_capture_interruption
@@ -463,7 +462,7 @@ mod windows_app {
         let host_error = diagnostics
             .device_failed
             .then_some("A Windows audio device failed. Reinitialize audio to reopen the streams.");
-        Ok(serde_json::json!({
+        let response = serde_json::json!({
             "generation": generation,
             "engine": {
                 "fx": fx, "masterGain": snapshot.master_gain,
@@ -472,7 +471,9 @@ mod windows_app {
                 "processedFrames": host.rendered_frames(), "inputLevel": 0, "outputLevel": 0,
             },
             "host": { "inputDeviceId": null, "status": status, "error": host_error, "sampleRate": diagnostics.render.actual_sample_rate, "captureInterruption": capture_interruption },
-        }))
+        });
+        lifecycle.generation = generation;
+        Ok(response)
     }
 
     fn idle_snapshot(generation: u64) -> serde_json::Value {
