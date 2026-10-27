@@ -93,6 +93,7 @@ pub enum HostEvent {
 /// A stopped, in-memory copy of retained engine audio for device stream recovery.
 /// It is built and restored outside the render callback.
 pub struct RetainedSession {
+    pub source_sample_rate: u32,
     pub metadata: ImportMetadata,
     pub tracks: [Vec<f32>; 2],
 }
@@ -127,6 +128,7 @@ pub struct Processor {
     published_snapshot: Arc<ArrayQueue<EngineSnapshot>>,
     published_frames: Arc<AtomicU64>,
     engine: LoopEngine,
+    sample_rate: u32,
     block_budget: usize,
     block_sequence: u64,
     rendered_frames: u64,
@@ -200,10 +202,20 @@ impl Processor {
                 offset += count;
             }
         }
-        Some(RetainedSession { metadata, tracks })
+        Some(RetainedSession {
+            source_sample_rate: self.sample_rate,
+            metadata,
+            tracks,
+        })
     }
 
     fn restore_retained_session(&mut self, session: &RetainedSession) -> Result<(), String> {
+        if session.source_sample_rate != self.sample_rate {
+            return Err(format!(
+                "retained audio was recorded at {} Hz; the recovered device uses {} Hz",
+                session.source_sample_rate, self.sample_rate
+            ));
+        }
         if session.tracks.each_ref().map(|samples| samples.len())
             != session.metadata.tracks.map(|track| track.length)
         {
@@ -262,6 +274,7 @@ impl Processor {
             published_snapshot,
             published_frames,
             engine: LoopEngine::with_capacity_and_sample_rate(samples, sample_rate),
+            sample_rate,
             block_budget,
             block_sequence: 0,
             rendered_frames: 0,

@@ -138,6 +138,41 @@ test('a confirmed reset clears canceled FX intent before later edits', () => {
   });
 });
 
+test('discarding and restarting audio clears canceled FX intent', () => {
+  const readySnapshot = makeSnapshot();
+  const onConfigChange = vi.fn();
+  const renderProps = (snapshot: AudioSnapshot) => (
+    <FxEditor
+      onConfigChange={onConfigChange}
+      supportedScopes={[0, 1, 2, 3]}
+      snapshot={snapshot}
+      enabled
+      scope={0}
+      intentResetKey={0}
+      focusRequest={0}
+      onScopeChange={vi.fn()}
+      onClose={vi.fn()}
+    />
+  );
+  const { rerender } = render(renderProps(readySnapshot));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Enable Input filter' }));
+  fireEvent.change(screen.getByRole('slider', { name: 'Input cutoff' }), {
+    target: { value: '700' },
+  });
+  rerender(renderProps({ ...readySnapshot, status: 'stopping' }));
+  rerender(renderProps(readySnapshot));
+  fireEvent.change(screen.getByRole('slider', { name: 'Input cutoff' }), {
+    target: { value: '500' },
+  });
+
+  expect(onConfigChange).toHaveBeenLastCalledWith(0, {
+    type: 'LowPass',
+    cutoffHz: expect.any(Number),
+    bypassed: true,
+  });
+});
+
 test('Master FX editor retains Web adapter errors from the master slot', () => {
   const snapshot = {
     ...makeSnapshot(),

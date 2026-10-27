@@ -69,8 +69,16 @@ fn retained_recording_survives_device_failure_export_and_host_restore_exactly() 
     processor.process_block(&[], &mut [], HostEvent::DeviceFailed);
 
     let retained = processor.export_retained_session().unwrap();
+    assert_eq!(retained.source_sample_rate, 48_000);
     assert_eq!(retained.tracks[0], [0.135, -0.27, 0.53, -0.79]);
     assert_eq!(retained.metadata.cycle_length, 4);
+    let mismatch = Processor::controlled_with_session(16, 44_100, Some(&retained))
+        .err()
+        .expect("recovery must reject a changed sample rate");
+    assert!(mismatch.contains("recorded at 48000 Hz"));
+    assert!(mismatch.contains("uses 44100 Hz"));
+
+    // A rejected attempt leaves the retained image available for a same-rate retry.
     let (mut recovered_adapter, mut recovered) =
         Processor::controlled_with_session(16, 48_000, Some(&retained)).unwrap();
     assert_eq!(recovered.snapshot().tracks[0].state, TrackState::Stopped);
