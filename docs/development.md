@@ -31,6 +31,11 @@ Run from the repository root:
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | Rust linting |
 | `cargo test --locked --workspace` | Rust tests |
 | `npm run build:wasm` | Release WASM artifact for portable loop engine |
+| `cargo test --locked -p loop-engine` | Run deterministic portable engine tests without desktop shell or audio hardware |
+| `cargo test --locked -p windows-audio-host` | Run Windows host's controlled-input tests without requiring physical devices |
+| `cargo check --locked --all-targets -p windows-audio-host --target x86_64-pc-windows-msvc` | Check the Windows host for the Windows x64 target |
+| `cargo test --locked --manifest-path apps/windows/src-tauri/Cargo.toml --target x86_64-pc-windows-msvc` | Test the Windows shell bridge |
+| `npm run tauri:build` | Build the Windows x64 desktop application (Windows toolchain required) |
 | `npm run spike:wasm:build` | Build experimental gain WASM and copy to the public spike route |
 | `npm run spike:wasm` | Build and open the isolated WASM microphone experiment |
 
@@ -48,7 +53,9 @@ browser cases against the production UI and actual worklet/WASM path. See the
 [Input FX contract](specs/input-fx-77.md) for the processing contract and
 verification scope. CI runs this suite alongside the full browser suite.
 
-GitHub Actions runs on pull requests and main pushes. The web job runs Node 24, npm ci, all web checks, browser installation, the committed Rust toolchain, and production browser tests including production audio startup/monitoring, first Loop recording/playback, known-sample stereo output and the compiled WASM spike. Browser verification therefore also requires Rust. The Rust job uses the committed toolchain, fmt, clippy, tests and release WASM build. Errors fail jobs; browser failure artifacts are uploaded.
+GitHub Actions runs the Web, portable Rust, and Windows jobs on every pull request and main push, so shared package and host changes receive all three relevant checks. The Web job runs Node 24, npm ci, all web checks (including automated platform-boundary checks), browser installation, the committed Rust toolchain, and production browser tests including production audio startup/monitoring, first Loop recording/playback, known-sample stereo output and the compiled WASM spike. Browser verification therefore requires Rust, but it does not invoke Tauri or require a Windows toolchain. The portable Rust job runs formatting, clippy, workspace tests and release WASM build on Linux; `cargo test --locked -p loop-engine` is also available as an isolated engine-only run without a desktop shell or physical audio devices. The Windows job separately checks/tests the WASAPI host and shell bridge, then builds and launches the Windows x64 shell on `windows-2022`. These jobs fail independently, and browser failure artifacts are uploaded.
+
+The automated boundary guard runs with `npm run check`. It checks shared TypeScript package dependencies and imports, keeps concrete browser audio and Tauri APIs in their host adapters, and verifies that `loop-engine` and `native-audio-host` do not introduce Windows, browser, or desktop-shell dependencies. Windows release support is scoped to x64 and Windows 11 Home/Pro versions supported at release time; document the exact minimum and tested Windows builds with the release evidence.
 
 Repository administrators can require both jobs in branch protection; adding a workflow does not configure repository rules.
 
