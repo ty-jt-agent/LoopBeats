@@ -16,7 +16,6 @@ mod windows_app {
     use tauri::State;
     use windows_audio_host::{HostConfig, MonitoringHost};
 
-    #[derive(Default)]
     struct HostState {
         lifecycle: Mutex<HostLifecycle>,
         submit_gate: Mutex<()>,
