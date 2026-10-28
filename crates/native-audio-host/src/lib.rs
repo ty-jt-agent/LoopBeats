@@ -143,6 +143,7 @@ struct TransferQueues {
     requests: ArrayQueue<(u64, TransferRequest)>,
     replies: ArrayQueue<(u64, TransferReply)>,
     next_id: AtomicU64,
+    active_request: AtomicU64,
     cancelled: AtomicBool,
 }
 
@@ -196,6 +197,14 @@ pub struct SessionTransfer {
 
 impl SessionTransfer {
     fn request(&self, request: TransferRequest) -> Result<TransferReply, String> {
+        self.request_with_timeout(request, std::time::Duration::from_secs(30))
+    }
+
+    fn request_with_timeout(
+        &self,
+        request: TransferRequest,
+        timeout: std::time::Duration,
+    ) -> Result<TransferReply, String> {
         if self.queues.cancelled.load(Ordering::Acquire) {
             return Err("session transfer was canceled".into());
         }
@@ -208,14 +217,36 @@ impl SessionTransfer {
         }
         let _gate = TransferRequestGuard(Arc::clone(&self.request_active));
         while self.queues.replies.pop().is_some() {}
-        let request_id = self.queues.next_id.fetch_add(1, Ordering::Relaxed).max(1);
+        let request_id = self.queues.next_id.fetch_add(1, Ordering::Relaxed);
         self.queues
-            .requests
-            .push((request_id, request))
-            .map_err(|_| "session transfer is busy".to_string())?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            .active_request
+            .store(request_id, Ordering::Release);
+        let deadline = std::time::Instant::now() + timeout;
+        let mut request = Some(request);
+        while let Err((_, pending)) = self.queues.requests.push((
+            request_id,
+            request.take().expect("request is retried only when full"),
+        )) {
+            request = Some(pending);
+            if std::time::Instant::now() >= deadline {
+                let _ = self.queues.active_request.compare_exchange(
+                    request_id,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                return Err("session transfer timed out".into());
+            }
+            std::hint::spin_loop();
+        }
         loop {
-            if self.queues.cancelled.load(Ordering::Acquire) {
+            if self.queues.cancelled.load(Ordering::Acquire)
+                && self
+                    .queues
+                    .active_request
+                    .compare_exchange(request_id, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
                 return Err("session transfer was canceled".into());
             }
             if let Some((reply_id, reply)) = self.queues.replies.pop() {
@@ -224,7 +255,19 @@ impl SessionTransfer {
                 }
             }
             if std::time::Instant::now() >= deadline {
-                return Err("session transfer timed out".into());
+                // If render servicing has not claimed the request, expire it
+                // atomically. The processor will discard it when it reaches
+                // the queue. If servicing already claimed it, wait for its
+                // terminal acknowledgement so a commit is never reported as
+                // failed while it can still take effect.
+                if self
+                    .queues
+                    .active_request
+                    .compare_exchange(request_id, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return Err("session transfer timed out".into());
+                }
             }
             std::hint::spin_loop();
         }
@@ -467,6 +510,7 @@ impl Processor {
             // has submitted its next request; keep both bounded outcomes.
             replies: ArrayQueue::new(2),
             next_id: AtomicU64::new(1),
+            active_request: AtomicU64::new(0),
             cancelled: AtomicBool::new(false),
         });
         let published_snapshot = Arc::new(ArrayQueue::new(1));
@@ -605,6 +649,20 @@ impl Processor {
         let Some((request_id, request)) = self.transfer.requests.pop() else {
             return;
         };
+        if self
+            .transfer
+            .active_request
+            .compare_exchange(
+                request_id,
+                request_id | (1_u64 << 63),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            // The control side timed out before this request was claimed.
+            return;
+        }
         let reply = match request {
             TransferRequest::BeginExport => {
                 let snapshot = self.engine.snapshot();
@@ -688,6 +746,7 @@ impl Processor {
         };
         // The single outstanding request reserves the single reply slot before
         // dispatch; failure here indicates a protocol invariant violation.
+        self.transfer.active_request.store(0, Ordering::Release);
         let _ = self.transfer.replies.push((request_id, reply));
     }
 
@@ -1127,5 +1186,93 @@ mod publication_failure_tests {
             ]
         );
         assert_eq!(adapter.take_outcome(), None);
+    }
+}
+
+#[cfg(test)]
+mod transfer_timeout_tests {
+    use super::*;
+    use std::{sync::mpsc, thread, time::Duration};
+
+    fn serviced<T: Send + 'static>(
+        processor: &mut Processor,
+        operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || sender.send(operation()).unwrap());
+        loop {
+            if let Ok(result) = receiver.try_recv() {
+                return result;
+            }
+            processor.service_session_transfer();
+            thread::yield_now();
+        }
+    }
+
+    fn metadata() -> ImportMetadata {
+        ImportMetadata {
+            fx: [FxConfig::None; 4],
+            cycle_length: 0,
+            master_gain: 1.0,
+            tracks: [
+                ImportTrack {
+                    length: 1,
+                    mode: PlaybackMode::OneShot,
+                    gain: 1.0,
+                    muted: false,
+                },
+                ImportTrack {
+                    length: 0,
+                    mode: PlaybackMode::Loop,
+                    gain: 1.0,
+                    muted: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn timed_out_unclaimed_commit_cannot_replace_live_recordings() {
+        let (commands, mut processor) = Processor::controlled(16, 48_000);
+        let transfer = commands.session_transfer();
+        let begin = transfer.clone();
+        serviced(&mut processor, move || begin.begin_import(metadata())).unwrap();
+        let write = transfer.clone();
+        serviced(&mut processor, move || {
+            write.write_import_chunk(0, 0, &[0.75])
+        })
+        .unwrap();
+        let commit = transfer.clone();
+        serviced(&mut processor, move || commit.commit_import()).unwrap();
+
+        let begin = transfer.clone();
+        serviced(&mut processor, move || begin.begin_import(metadata())).unwrap();
+        let write = transfer.clone();
+        serviced(&mut processor, move || {
+            write.write_import_chunk(0, 0, &[-0.25])
+        })
+        .unwrap();
+
+        let timed_out = transfer.clone();
+        let result = thread::spawn(move || {
+            timed_out.request_with_timeout(TransferRequest::CommitImport, Duration::from_millis(10))
+        })
+        .join()
+        .unwrap();
+        assert!(matches!(result, Err(error) if error == "session transfer timed out"));
+
+        // Delayed render servicing discards the expired commit. A subsequent
+        // cancellation is serviced normally and leaves the old recording live.
+        processor.service_session_transfer();
+        let cancel = transfer.clone();
+        serviced(&mut processor, move || cancel.cancel_import()).unwrap();
+        let export = transfer.clone();
+        let (_, _, revisions) = serviced(&mut processor, move || export.begin_export()).unwrap();
+        let read = transfer.clone();
+        let samples = serviced(&mut processor, move || {
+            read.read_export_chunk(0, revisions[0], 0, 1)
+        })
+        .unwrap();
+        assert_eq!(samples, [0.75]);
     }
 }

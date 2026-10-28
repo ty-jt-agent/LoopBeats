@@ -27,6 +27,24 @@ mod windows_app {
         next_transfer_id: AtomicU64,
     }
 
+    fn allocate_transfer_id(counter: &AtomicU64) -> u64 {
+        counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    impl Default for HostState {
+        fn default() -> Self {
+            Self {
+                lifecycle: Mutex::new(HostLifecycle::default()),
+                submit_gate: Mutex::new(()),
+                pending: Mutex::new(HashMap::new()),
+                terminal: Mutex::new(HashMap::new()),
+                session_transfer: Mutex::new(TransferOperation::Idle),
+                transfer_gate: Mutex::new(()),
+                next_transfer_id: AtomicU64::new(1),
+            }
+        }
+    }
+
     #[derive(Default)]
     struct HostLifecycle {
         host: Option<MonitoringHost>,
@@ -738,10 +756,7 @@ mod windows_app {
                 return Err("another session transfer is already active".into());
             }
             let (rate, metadata, revisions) = transfer.begin_export()?;
-            let token = state
-                .next_transfer_id
-                .fetch_add(1, Ordering::Relaxed)
-                .max(1);
+            let token = allocate_transfer_id(&state.next_transfer_id);
             *state
                 .session_transfer
                 .lock()
@@ -839,10 +854,7 @@ mod windows_app {
                 return Err("another session transfer is already active".into());
             }
             transfer.begin_import(metadata)?;
-            let token = state
-                .next_transfer_id
-                .fetch_add(1, Ordering::Relaxed)
-                .max(1);
+            let token = allocate_transfer_id(&state.next_transfer_id);
             *state
                 .session_transfer
                 .lock()
@@ -996,6 +1008,15 @@ mod windows_app {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn consecutive_transfers_get_distinct_tokens() {
+            let state = HostState::default();
+            let first = allocate_transfer_id(&state.next_transfer_id);
+            let second = allocate_transfer_id(&state.next_transfer_id);
+            assert_eq!((first, second), (1, 2));
+            assert_ne!(first, second);
+        }
 
         #[test]
         fn stale_bridge_generation_is_rejected() {
