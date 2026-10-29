@@ -19,7 +19,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - run: npm run check:web
+      - run: npm run check:scaffold
       - run: npx playwright install --with-deps chromium
       - run: rustup show
       - run: npm run test:browser

@@ -94,6 +94,20 @@ const [
   packageManifest('packages/audio-client'),
   packageManifest('apps/web'),
 ]);
+const webTypeScriptConfig = JSON.parse(
+  await readFile(new URL('../apps/web/tsconfig.json', import.meta.url), 'utf8'),
+);
+assert(
+  webTypeScriptConfig.include.length > 0 &&
+    webTypeScriptConfig.include.every(
+      (path) =>
+        path.startsWith('src/') ||
+        path.startsWith('tests/') ||
+        path === 'vite.config.ts' ||
+        path.startsWith('../../packages/'),
+    ),
+  'The Web TypeScript project must include only Web and shared sources.',
+);
 for (const [name, manifest] of [
   ['domain', domainPackage],
   ['session-format', sessionFormatPackage],
@@ -147,6 +161,11 @@ for (const path of webHostFiles) {
     source,
     /@tauri-apps\/|\b(?:AudioContext|AudioWorkletNode|AudioWorklet|MediaStreamAudioSourceNode)\b|(?:mediaDevices\s*\.\s*getUserMedia|getUserMedia\s*\()/,
     `${path} must use audio-client for browser audio and must not depend on Tauri.`,
+  );
+  assert.doesNotMatch(
+    source,
+    /from\s+['"][^'"]*(?:apps\/windows|@loopbeats\/windows|src-tauri)[^'"]*['"]|import\(['"][^'"]*(?:apps\/windows|@loopbeats\/windows|src-tauri)[^'"]*['"]\)/,
+    `${path} must not import the Windows workspace or shell.`,
   );
 }
 

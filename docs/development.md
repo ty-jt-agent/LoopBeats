@@ -18,13 +18,15 @@ Run from the repository root:
 
 | Command | Checks |
 | --- | --- |
-| `npm run check:scaffold` | Repository structure and skills |
-| `npm run typecheck` | Web/shared sources, tests and TypeScript configuration |
+| `npm run check:scaffold` | Repository structure, skills and cross-platform boundary checks |
+| `npm run typecheck` | All workspace TypeScript sources, including Windows shell sources |
+| `npm run typecheck:web` | Typecheck the Web app and its shared dependencies without Windows sources |
 | `npm run lint` | TypeScript/React and tooling JavaScript; warnings fail |
 | `npm run format:check` | Maintained application and tooling formatting |
 | `npm test` | Vitest tests through observable UI boundaries |
-| `npm run check` | All five checks above |
-| `npm run build` | Compile/copy real audio WASM/worklet, typecheck and production web build |
+| `npm run check:web` | Web-only typecheck, lint, formatting and unit tests; does not load Windows workspace sources |
+| `npm run check` | Full repository checks across Web and Windows workspaces |
+| `npm run build` | Compile/copy real audio WASM/worklet, Web-only typecheck and production Web build |
 | `npm run build:audio` | Regenerate production audio assets after Rust/worklet source edits |
 | `npm run test:browser` | Build spike WASM and web; Playwright startup and WASM/worklet checks (requires Cargo on PATH) |
 | `cargo fmt --all -- --check` | Rust formatting |
