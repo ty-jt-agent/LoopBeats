@@ -45,6 +45,7 @@ const getApplicationSnapshot = () => {
         inputDeviceId: host.snapshot.inputDeviceId,
         error: host.snapshot.error,
         sampleRate: host.snapshot.sampleRate,
+        wasapiDiagnostics: host.snapshot.wasapiDiagnostics,
       },
     };
   }
@@ -328,6 +329,58 @@ test('settings remain available before startup and diagnostics are disclosed sep
   expect(
     screen.getByText('Start audio to see live diagnostics.'),
   ).toBeVisible();
+});
+
+test('native WASAPI diagnostics disclose negotiated endpoints and live counters', () => {
+  const capture = {
+    direction: 'capture' as const,
+    endpointId: 'capture-id',
+    endpointName: 'NZXT USB MIC',
+    adapterName: 'USB Audio Device',
+    driver: {
+      status: 'available' as const,
+      name: 'Microsoft USB Audio',
+      version: '10.0.26100.9457',
+    },
+    requestedSampleRate: 48_000,
+    actualSampleRate: 48_000,
+    channelCount: 1,
+    sampleFormat: 'Float32' as const,
+    requestedPeriodFrames: 128,
+    actualPeriodFrames: 128,
+    bufferFrames: 192,
+    fallback: null,
+  };
+  host.snapshot = {
+    ...host.snapshot,
+    wasapiDiagnostics: {
+      capture,
+      render: {
+        ...capture,
+        direction: 'render',
+        endpointId: 'render-id',
+        endpointName: 'Realtek Audio',
+      },
+      captureDiscontinuities: 2,
+      captureOverflows: 0,
+      renderFailures: 0,
+      deviceFailed: false,
+      captureQueueFrames: 960,
+      captureQueueCapacityFrames: 16_384,
+      captureResamplingCorrectionPpm: -12,
+      lastCaptureDiscontinuity: null,
+      lastCaptureImpact: null,
+    },
+  };
+
+  renderApp();
+  fireEvent.click(screen.getByText('Diagnostics', { exact: true }));
+
+  expect(screen.getByText('NZXT USB MIC')).toBeVisible();
+  expect(screen.getByText('capture-id')).toBeVisible();
+  expect(screen.getByText('2 / 0')).toBeVisible();
+  expect(screen.getByText('960 / 16384 frames')).toBeVisible();
+  expect(screen.getByText('-12 ppm')).toBeVisible();
 });
 
 test('Global STOP does nothing when all tracks are empty even with a retained running cycle', () => {

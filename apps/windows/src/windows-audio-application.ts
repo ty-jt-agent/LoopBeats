@@ -8,6 +8,7 @@ import type {
   AudioCommandSubmission,
   FxConfig,
   FxScope,
+  WasapiDiagnosticsSample,
 } from '@loopbeats/domain';
 
 const emptyTrack = () => ({
@@ -56,6 +57,8 @@ export class WindowsAudioApplication implements AudioApplication {
   private readonly pendingFx = [0, 0, 0, 0];
   private snapshotTimer: ReturnType<typeof setInterval> | undefined;
   private readonly listeners = new Set<() => void>();
+  private diagnosticsTrace: WasapiDiagnosticsSample[] = [];
+  private lastDiagnosticsSampleAt: number | null = null;
 
   constructor() {
     void invoke<AudioCapabilities>('audio_capabilities')
@@ -68,6 +71,8 @@ export class WindowsAudioApplication implements AudioApplication {
   }
 
   getApplicationSnapshot = () => this.snapshot;
+  getWasapiDiagnosticsTrace = (): readonly WasapiDiagnosticsSample[] =>
+    this.diagnosticsTrace;
   getCapabilities = () => this.capabilities;
   getSessionGeneration = () => this.generation;
   subscribe = (listener: () => void) => {
@@ -127,6 +132,8 @@ export class WindowsAudioApplication implements AudioApplication {
   }
 
   async start(): Promise<void> {
+    this.diagnosticsTrace = [];
+    this.lastDiagnosticsSampleAt = null;
     this.setStatus('starting', null);
     try {
       this.generation = await invoke<number>('audio_host_start', {
@@ -176,11 +183,39 @@ export class WindowsAudioApplication implements AudioApplication {
         AudioApplicationSnapshot & { generation: number }
       >('audio_snapshot');
       this.generation = snapshot.generation;
+      this.sampleWasapiDiagnostics(snapshot);
       this.snapshot = this.withPendingFx(snapshot);
       this.publish();
     } catch (error) {
       this.fail(error);
     }
+  }
+
+  private sampleWasapiDiagnostics(snapshot: AudioApplicationSnapshot): void {
+    const diagnostics = snapshot.host.wasapiDiagnostics;
+    if (!diagnostics) return;
+    const now = Date.now();
+    if (
+      this.lastDiagnosticsSampleAt !== null &&
+      now - this.lastDiagnosticsSampleAt < 1_000
+    )
+      return;
+    this.lastDiagnosticsSampleAt = now;
+    this.diagnosticsTrace.push({
+      timestampUtc: new Date(now).toISOString(),
+      processedFrames: snapshot.engine.processedFrames,
+      captureDiscontinuities: diagnostics.captureDiscontinuities,
+      captureOverflows: diagnostics.captureOverflows,
+      renderFailures: diagnostics.renderFailures,
+      deviceFailed: diagnostics.deviceFailed,
+      captureQueueFrames: diagnostics.captureQueueFrames,
+      captureQueueCapacityFrames: diagnostics.captureQueueCapacityFrames,
+      captureResamplingCorrectionPpm:
+        diagnostics.captureResamplingCorrectionPpm,
+      lastCaptureDiscontinuity: diagnostics.lastCaptureDiscontinuity,
+      lastCaptureImpact: diagnostics.lastCaptureImpact,
+    });
+    if (this.diagnosticsTrace.length > 7_200) this.diagnosticsTrace.shift();
   }
 
   private setFxError(scope: FxScope, error: string | null) {

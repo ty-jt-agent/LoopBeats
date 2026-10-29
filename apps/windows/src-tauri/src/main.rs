@@ -14,7 +14,11 @@ mod windows_app {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::State;
-    use windows_audio_host::{HostConfig, MonitoringHost};
+    use windows_audio_host::{
+        CaptureDiscontinuityReason, CaptureLossImpact,
+        DriverDiagnostic, FallbackReason, HostConfig, HostDiagnostics, MonitoringHost,
+        StreamDiagnostics, StreamDirection, StreamSampleFormat,
+    };
 
     struct HostState {
         lifecycle: Mutex<HostLifecycle>,
@@ -546,7 +550,7 @@ mod windows_app {
                 "tracks": tracks, "monitoring": snapshot.monitoring,
                 "processedFrames": host.rendered_frames(), "inputLevel": 0, "outputLevel": 0,
             },
-            "host": { "inputDeviceId": null, "status": status, "error": host_error, "sampleRate": diagnostics.render.actual_sample_rate, "captureInterruption": capture_interruption },
+            "host": { "inputDeviceId": null, "status": status, "error": host_error, "sampleRate": diagnostics.render.actual_sample_rate, "captureInterruption": capture_interruption, "wasapiDiagnostics": wasapi_diagnostics_json(&diagnostics) },
         });
         if diagnostics.device_failed {
             host.commands.session_transfer().abort_pending();
@@ -563,6 +567,86 @@ mod windows_app {
                 "tracks": [empty_track(), empty_track()], "monitoring": false, "processedFrames": 0, "inputLevel": 0, "outputLevel": 0,
                 "fx": std::array::from_fn::<_, 4, _>(|_| serde_json::json!({ "config": { "type": "None" }, "transitioning": false, "removing": false })) },
             "host": { "inputDeviceId": null, "status": "idle", "error": null, "sampleRate": null },
+        })
+    }
+
+    fn wasapi_diagnostics_json(diagnostics: &HostDiagnostics) -> serde_json::Value {
+        serde_json::json!({
+            "capture": stream_diagnostics_json(&diagnostics.capture),
+            "render": stream_diagnostics_json(&diagnostics.render),
+            "captureDiscontinuities": diagnostics.capture_discontinuities,
+            "captureOverflows": diagnostics.capture_overflows,
+            "renderFailures": diagnostics.render_failures,
+            "deviceFailed": diagnostics.device_failed,
+            "captureQueueFrames": diagnostics.capture_queue_frames,
+            "captureQueueCapacityFrames": diagnostics.capture_queue_capacity_frames,
+            "captureResamplingCorrectionPpm": diagnostics.capture_resampling_correction_ppm,
+            "lastCaptureDiscontinuity": diagnostics.last_capture_discontinuity.map(|reason| match reason {
+                CaptureDiscontinuityReason::WasapiReported => "wasapi-reported",
+                CaptureDiscontinuityReason::CapturePacketGap => "capture-packet-gap",
+                CaptureDiscontinuityReason::CaptureQueueOverflow => "capture-queue-overflow",
+                CaptureDiscontinuityReason::RenderInputUnderflow => "render-input-underflow",
+                CaptureDiscontinuityReason::CaptureBacklogDiscarded => "capture-backlog-discarded",
+            }),
+            "lastCaptureImpact": capture_impact_json(diagnostics.last_capture_impact),
+        })
+    }
+
+    fn capture_impact_json(impact: Option<CaptureLossImpact>) -> serde_json::Value {
+        match impact {
+            Some(CaptureLossImpact::PlaybackContinued) => {
+                serde_json::json!({ "type": "playback-continued" })
+            }
+            Some(CaptureLossImpact::InitialRecordingDiscarded { track_id }) => serde_json::json!({
+                "type": "initial-recording-discarded", "trackId": track_id,
+            }),
+            Some(CaptureLossImpact::OverdubMayBePartial { track_id }) => serde_json::json!({
+                "type": "overdub-may-be-partial", "trackId": track_id,
+            }),
+            None => serde_json::Value::Null,
+        }
+    }
+
+    fn stream_diagnostics_json(stream: &StreamDiagnostics) -> serde_json::Value {
+        let direction = match stream.direction {
+            StreamDirection::Capture => "capture",
+            StreamDirection::Render => "render",
+        };
+        let driver = match &stream.driver {
+            DriverDiagnostic::Available { name, version } => serde_json::json!({
+                "status": "available", "name": name, "version": version,
+            }),
+            DriverDiagnostic::Unavailable { reason } => serde_json::json!({
+                "status": "unavailable", "reason": reason,
+            }),
+        };
+        let sample_format = match stream.sample_format {
+            StreamSampleFormat::Float32 => "Float32",
+            StreamSampleFormat::Signed16 => "Signed16",
+            StreamSampleFormat::Signed24 => "Signed24",
+            StreamSampleFormat::Signed32 => "Signed32",
+        };
+        let fallback = match stream.fallback {
+            Some(FallbackReason::LowPeriodUnsupported) => Some("low-period-unsupported"),
+            Some(FallbackReason::IAudioClient3Unavailable) => {
+                Some("i-audio-client3-unavailable")
+            }
+            None => None,
+        };
+        serde_json::json!({
+            "direction": direction,
+            "endpointId": stream.endpoint_id,
+            "endpointName": stream.endpoint_name,
+            "adapterName": stream.adapter_name,
+            "driver": driver,
+            "requestedSampleRate": stream.requested_sample_rate,
+            "actualSampleRate": stream.actual_sample_rate,
+            "channelCount": stream.channel_count,
+            "sampleFormat": sample_format,
+            "requestedPeriodFrames": stream.requested_period_frames,
+            "actualPeriodFrames": stream.actual_period_frames,
+            "bufferFrames": stream.buffer_frames,
+            "fallback": fallback,
         })
     }
 
@@ -1007,6 +1091,7 @@ mod windows_app {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use windows_audio_host::CaptureInterruptionNotices;
 
         #[test]
         fn consecutive_transfers_get_distinct_tokens() {
@@ -1028,6 +1113,59 @@ mod windows_app {
             assert_eq!(host_status(true, false), "error");
             assert_eq!(host_status(false, true), "interrupted");
             assert_eq!(host_status(false, false), "ready");
+        }
+
+        #[test]
+        fn wasapi_snapshot_preserves_stream_and_queue_diagnostics() {
+            let stream = |direction, endpoint_id: &str, fallback| StreamDiagnostics {
+                direction,
+                endpoint_id: endpoint_id.into(),
+                endpoint_name: "Test endpoint".into(),
+                adapter_name: "Test adapter".into(),
+                driver: DriverDiagnostic::Available {
+                    name: "Test driver".into(),
+                    version: Some("1.2.3".into()),
+                },
+                requested_sample_rate: 48_000,
+                actual_sample_rate: 48_000,
+                channel_count: 2,
+                sample_format: StreamSampleFormat::Float32,
+                requested_period_frames: 128,
+                actual_period_frames: 128,
+                buffer_frames: 192,
+                fallback,
+            };
+            let diagnostics = HostDiagnostics {
+                capture: stream(StreamDirection::Capture, "capture-id", None),
+                render: stream(
+                    StreamDirection::Render,
+                    "render-id",
+                    Some(FallbackReason::LowPeriodUnsupported),
+                ),
+                capture_discontinuities: 3,
+                capture_overflows: 1,
+                render_failures: 0,
+                device_failed: false,
+                capture_queue_frames: 960,
+                last_capture_discontinuity: Some(CaptureDiscontinuityReason::CapturePacketGap),
+                last_capture_impact: Some(CaptureLossImpact::OverdubMayBePartial {
+                    track_id: 1,
+                }),
+                pending_capture_interruption: CaptureInterruptionNotices::default(),
+                capture_queue_capacity_frames: 16_384,
+                capture_resampling_correction_ppm: -12,
+            };
+
+            let snapshot = wasapi_diagnostics_json(&diagnostics);
+
+            assert_eq!(snapshot["capture"]["endpointId"], "capture-id");
+            assert_eq!(snapshot["capture"]["actualSampleRate"], 48_000);
+            assert_eq!(snapshot["render"]["fallback"], "low-period-unsupported");
+            assert_eq!(snapshot["captureDiscontinuities"], 3);
+            assert_eq!(snapshot["captureQueueFrames"], 960);
+            assert_eq!(snapshot["lastCaptureDiscontinuity"], "capture-packet-gap");
+            assert_eq!(snapshot["lastCaptureImpact"]["type"], "overdub-may-be-partial");
+            assert_eq!(snapshot["lastCaptureImpact"]["trackId"], 1);
         }
 
         #[test]

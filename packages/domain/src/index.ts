@@ -19,4 +19,7 @@ export type {
   TrackId,
   PlaybackMode,
   TransportSnapshot,
+  WasapiDiagnosticsSnapshot,
+  WasapiDiagnosticsSample,
+  WasapiStreamSnapshot,
 } from './audio';

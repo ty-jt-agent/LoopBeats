@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { afterEach, expect, test, vi } from 'vitest';
-import type { AudioApplicationSnapshot } from '@loopbeats/domain';
+import type {
+  AudioApplicationSnapshot,
+  WasapiDiagnosticsSnapshot,
+} from '@loopbeats/domain';
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: bridge.invoke }));
@@ -172,6 +175,85 @@ test('Windows adapter starts the native host and returns engine-applied workflow
     'FX slot is transitioning.',
   );
   expect(app.getApplicationSnapshot().host.status).toBe('ready');
+  await app.stop();
+});
+
+test('Windows adapter retains one-second host diagnostics samples for export', async () => {
+  vi.useFakeTimers();
+  const wasapiDiagnostics: WasapiDiagnosticsSnapshot = {
+    capture: {
+      direction: 'capture',
+      endpointId: 'capture-id',
+      endpointName: 'NZXT USB MIC',
+      adapterName: 'USB Audio Device',
+      driver: { status: 'available', name: 'USB Audio', version: '1.0' },
+      requestedSampleRate: 48_000,
+      actualSampleRate: 48_000,
+      channelCount: 1,
+      sampleFormat: 'Float32',
+      requestedPeriodFrames: 128,
+      actualPeriodFrames: 128,
+      bufferFrames: 192,
+      fallback: null,
+    },
+    render: {
+      direction: 'render',
+      endpointId: 'render-id',
+      endpointName: 'Realtek Audio',
+      adapterName: 'Realtek',
+      driver: { status: 'available', name: 'Realtek', version: '1.0' },
+      requestedSampleRate: 48_000,
+      actualSampleRate: 48_000,
+      channelCount: 2,
+      sampleFormat: 'Float32',
+      requestedPeriodFrames: 128,
+      actualPeriodFrames: 128,
+      bufferFrames: 192,
+      fallback: null,
+    },
+    captureDiscontinuities: 0,
+    captureOverflows: 0,
+    renderFailures: 0,
+    deviceFailed: false,
+    captureQueueFrames: 960,
+    captureQueueCapacityFrames: 16_384,
+    captureResamplingCorrectionPpm: -12,
+    lastCaptureDiscontinuity: null,
+    lastCaptureImpact: null,
+  };
+  bridge.invoke.mockImplementation(async (name: string) => {
+    if (name === 'audio_capabilities')
+      return {
+        inputDeviceSelection: false,
+        outputDeviceSelection: false,
+        monitoring: true,
+        gainUpdateCoalescing: false,
+        supportedFxScopes: [0, 3],
+      };
+    if (name === 'audio_host_start') return 1;
+    if (name === 'audio_snapshot')
+      return {
+        ...snapshot(),
+        host: { ...snapshot().host, wasapiDiagnostics },
+        generation: 1,
+      };
+    if (name === 'audio_host_stop') return 2;
+    throw new Error(`Unexpected native command: ${name}`);
+  });
+
+  const app = new WindowsAudioApplication();
+  await Promise.resolve();
+  await app.start();
+  expect(app.getWasapiDiagnosticsTrace()).toHaveLength(1);
+
+  await vi.advanceTimersByTimeAsync(999);
+  expect(app.getWasapiDiagnosticsTrace()).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+
+  const trace = app.getWasapiDiagnosticsTrace();
+  expect(trace).toHaveLength(2);
+  expect(trace[1].captureQueueFrames).toBe(960);
+  expect(trace[1].captureResamplingCorrectionPpm).toBe(-12);
   await app.stop();
 });
 
