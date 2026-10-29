@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "vite.config.ts",
+    "../web/src/**/*.ts",
+    "../web/src/**/*.tsx",
+    "../web/tests/setup.ts",
+    "../../packages/domain/src/**/*.ts",
+    "../../packages/session-format/src/**/*.ts"
+  ],
+  "exclude": ["../web/src/**/*.test.ts", "../web/src/**/*.test.tsx"]
+}
