@@ -57,6 +57,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: npm run check:windows
       - name: Build Windows x64 shell with startup smoke enabled
         shell: pwsh
         run: |

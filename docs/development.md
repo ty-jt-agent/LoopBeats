@@ -25,6 +25,7 @@ Run from the repository root:
 | `npm run format:check` | Maintained application and tooling formatting |
 | `npm test` | Vitest tests through observable UI boundaries |
 | `npm run check:web` | Web-only typecheck, lint, formatting and unit tests; does not load Windows workspace sources |
+| `npm run check:windows` | Windows-only typecheck, lint, formatting and unit tests |
 | `npm run check` | Full repository checks across Web and Windows workspaces |
 | `npm run build` | Compile/copy real audio WASM/worklet, Web-only typecheck and production Web build |
 | `npm run build:audio` | Regenerate production audio assets after Rust/worklet source edits |
