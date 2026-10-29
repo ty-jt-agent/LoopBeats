@@ -86,11 +86,52 @@ The discontinuity count was already 1 in the initial diagnostic snapshot and rem
 | Standalone passthrough monitor diagnostic | Inconclusive; one unexplained capture discontinuity observed | Initial short run had one event. A separate 30-minute run observed no additional faults, but the original discontinuity remains unexplained; physical headphone route and listening outcome were not verified. |
 | Realtek mic-array to Realtek output monitor | Failed standalone stability observation | 30 minutes 1 second; discontinuities increased from 4 to 15,047, latest `CapturePacketGap`; no overflow or render failure. Physical wired-headphone route and listening outcome were not verified. |
 | Matched NZXT microphone and output monitor | Failed standalone stability observation | 29 minutes 47 seconds; discontinuities increased from 1 to 97, latest `WasapiReported`; no overflow or render failure. Physical output route and listening outcome were not verified. |
-| #103 integrated WASAPI hardware acceptance | Blocked / incomplete | No acoustic capture or pulse analysis; no 1,000-pulse trials; no integrated two-track/overdub/effect/UI stress workloads; other endpoint configurations and interruption cases remain untested. The standalone monitor observations do not satisfy the integrated workload gate. |
+| #103 integrated WASAPI hardware acceptance | Incomplete | The integrated app workloads and an overdub-interruption response were observed below, but the fixture capture, endpoint identity/settings, host fault/occupancy trace, UI/IPC stress, fallback, other endpoint pairs, and acoustic pulse analysis remain missing. No latency or stability acceptance pass is claimed. |
+
+## Integrated Tauri app observations
+
+The integrated Tauri window was accessible on this machine. These runs used
+`HostConfig::default()` at 48 kHz. The app does not expose the resolved capture
+or render endpoint identities, negotiated period/buffer, fallback state, host
+discontinuity counters, or capture-buffer occupancy. Its input/output meters
+are hard-coded to zero. The observations below establish visible workload and
+session behavior only; they are not a hardware stability or acoustic latency
+pass. The tester reported that the calibrated fixture was connected and its
+automatic sequence was running, but the fixture model, capture location, and
+recorded pulse data were not provided or accessible during these runs.
+
+| Workload | Start / observed end (Asia/Taipei) | App state and result |
+| --- | --- | --- |
+| Representative load | 14:24:27–14:54:29 (30 minutes 2 seconds) | Both Loop tracks played on the shared 123,840-sample cycle; monitoring was on; the input low-pass filter was active at 611 Hz; Track 1 remained overdubbing. The processed-frame counter advanced from 45,479,616 to 132,096,096. No app-level interruption appeared during this interval. Host discontinuity counts and per-second occupancy were unavailable. |
+| Effect plus two-track playback | 14:54:49–15:24:53 (30 minutes 4 seconds) | Both Loop tracks played; monitoring and the 611 Hz input low-pass filter were on; no track was overdubbing. The app remained ready and reported no interruption. Host discontinuity counts and per-second occupancy were unavailable. |
+| Monitoring-only passthrough | 15:25:33–15:55:44 (30 minutes 11 seconds) | Monitoring remained on; both tracks and transport were stopped; the input low-pass filter was bypassed. The app remained ready and reported no interruption. The physical input/output route was not identified or independently verified. |
+
+### Capture interruption during representative load
+
+- First attempt started at 14:14:46 and was interrupted at approximately
+  14:22:28 (7 minutes 42 seconds) while both tracks were playing, monitoring
+  was on, the input low-pass filter was active, and Track 1 was overdubbing.
+- The app reported: “Capture interrupted. Transport reset and monitoring
+  turned off. Completed recordings were retained. Track 1 overdub may be
+  partial; additions already written were retained.” This demonstrates the
+  expected user-facing recovery response during overdub.
+- After manual reinitialization, Track 1 and Track 2 diagnostics each showed
+  123,840 captured samples and 123,840 Loop samples. The app did not report the
+  exact number of newly added overdub samples, so exact addition retention is
+  not established.
+- The app did not retain/show the interruption reason or host diagnostics after
+  the event. Whether this was fixture-driven or an unexpected capture fault is
+  unknown. The separate 30-minute representative rerun above passed this
+  interruption point without another app-level interruption.
+
+These observations do not satisfy the issue's stability gate because the
+integrated UI provides no host fault counters or occupancy trace. They also do
+not replace a controlled capture-loss case with recorded host reason and exact
+sample-retention evidence.
 
 ## Additional checks
 
-- `npm run tauri:dev` compiled and opened the integrated `LoopBeats` window. The computer-use tool denied UI access with `Computer Use was not approved to use loopbeats-windows`, so audio was not started and no microphone permission prompt was acted on.
+- `npm run tauri:dev` compiled and opened the integrated `LoopBeats` window. The app was later accessible through Windows computer use; monitoring, effects, both tracks, overdub, and capture-interruption UI behavior were exercised as recorded above.
 - `npm run test:windows`: 3 files and 7 tests passed. The run also printed `Not implemented: navigation to another Document`.
 - `cargo test --locked -p windows-audio-host`: 25 tests passed; doc-tests had no tests.
 
