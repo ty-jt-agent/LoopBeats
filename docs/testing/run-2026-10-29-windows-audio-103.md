@@ -20,7 +20,7 @@ Reported 2026-10-29. This is a short diagnostic run of the standalone monitor ha
 | Capture | `NZXT USB MIC` (`{0.0.1.00000000}.{b45c7182-9207-4c3e-b8ba-f55e05c6c4ec}`) | 48,000 Hz | Float32 / 1 | 480 frames (10 ms) | 1,056 frames | None |
 | Render | `Realtek(R) Audio` (`{0.0.0.00000000}.{65382691-d1df-488d-8228-a312af984555}`) | 48,000 Hz | Float32 / 2 | 480 frames (10 ms) | 1,056 frames | None |
 
-The Realtek PnP signed-driver query returned `Realtek High Definition Audio`, version `6.0.9945.1` (provider shown as Microsoft; date `2026-01-20`). The NZXT driver version was not identified by that query and remains pending Device Manager confirmation.
+The current PnP signed-driver query reports `Realtek High Definition Audio` version `6.0.9945.1` (Realtek Semiconductor Corp., dated `2026-01-20`) and `USB Audio Device` version `10.0.26100.9457` (Microsoft, dated `2026-09-12`). The USB audio function is a child of the present `USB\VID_1E71&PID_2606` composite device, which also exposes `NZXT USB MIC`.
 
 ## Initial short diagnostic run
 
@@ -100,10 +100,31 @@ pass. The tester reported that the calibrated fixture was connected and its
 automatic sequence was running, but the fixture model, capture location, and
 recorded pulse data were not provided or accessible during these runs.
 
+### Windows endpoint inventory
+
+Windows PnP enumeration on this machine reported these candidate endpoints.
+This is an inventory only: endpoint status does not establish the active
+default route or physical headphone/coupler connection.
+
+| Direction | Endpoint | Endpoint ID | PnP status |
+| --- | --- | --- | --- |
+| Capture | NZXT USB MIC | `{0.0.1.00000000}.{B45C7182-9207-4C3E-B8BA-F55E05C6C4EC}` | OK |
+| Render | NZXT USB MIC | `{0.0.0.00000000}.{5112030B-81FC-49F9-99B0-97D64C395968}` | OK |
+| Capture | Realtek microphone array | `{0.0.1.00000000}.{919FC9FC-A773-49B7-97F5-33357FB4FDDE}` | OK |
+| Render | Realtek Audio speakers | `{0.0.0.00000000}.{65382691-D1DF-488D-8228-A312AF984555}` | OK |
+| Render | USB Audio Device | `{0.0.0.00000000}.{CBD54A6C-A82E-4F2C-B3D8-68ABB5B43839}` | Unknown |
+| Render | Realtek Audio headphones | `{0.0.0.00000000}.{C5E79CC9-727D-42A9-BF91-54FDA54B291A}` | Unknown |
+
+NZXT-to-NZXT is a matched-endpoint candidate. NZXT capture to Realtek render
+is a separate-endpoint candidate; independent clocks and the physical routes
+still need confirmation. The `USB Audio Device` endpoint is associated with
+the NZXT USB composite device; the reported acoustic fixture itself remains
+unidentified.
+
 | Workload | Start / observed end (Asia/Taipei) | App state and result |
 | --- | --- | --- |
-| Representative load | 14:24:27–14:54:29 (30 minutes 2 seconds) | Both Loop tracks played on the shared 123,840-sample cycle; monitoring was on; the input low-pass filter was active at 611 Hz; Track 1 was overdubbing at each approximately 40–50 second UI checkpoint. No UI commands were sent during the interval. The processed-frame counter advanced from 45,479,616 to 132,096,096. No app-level interruption appeared. Host discontinuity counts and per-second occupancy were unavailable. |
-| Effect plus two-track playback | 14:54:49–15:24:53 (30 minutes 4 seconds) | Both Loop tracks played; monitoring and the 611 Hz input low-pass filter were on; no track was overdubbing. The app remained ready at approximately 40–50 second UI checkpoints and reported no interruption. Host discontinuity counts and per-second occupancy were unavailable. |
+| Representative load | 14:24:27–14:54:29 (30 minutes 2 seconds) | Both Loop tracks played on the shared 123,840-sample cycle; monitoring was on; the input low-pass filter was active at 611 Hz; Track 1 was observed in Overdubbing state at approximately 40–50 second UI checkpoints; the continuous active-overdub duration and commands between checkpoints were not recorded, so this does not establish the required representative workload. No UI commands were sent during the interval. The processed-frame counter advanced from 45,479,616 to 132,096,096. No app-level interruption appeared. Host discontinuity counts and per-second occupancy were unavailable. |
+| Effect plus two-track playback (not the required effect-only workload) | 14:54:49–15:24:53 (30 minutes 4 seconds) | Both Loop tracks played; monitoring and the 611 Hz input low-pass filter were on; no track was overdubbing. The app remained ready at approximately 40–50 second UI checkpoints and reported no interruption. Host discontinuity counts and per-second occupancy were unavailable. |
 | Monitoring-only passthrough | 15:25:33–15:55:44 (30 minutes 11 seconds) | Monitoring remained on; both tracks and transport were stopped; the input low-pass filter was bypassed. The app remained ready at approximately 40–50 second UI checkpoints and reported no interruption. The physical input/output route was not identified or independently verified. |
 
 ### Capture interruption during representative load
@@ -136,3 +157,18 @@ sample-retention evidence.
 - `cargo test --locked -p windows-audio-host`: 25 tests passed; doc-tests had no tests.
 
 These automated checks and the successful app build do not replace the physical runs or acoustic measurements. Do not treat this report as a latency or hardware-acceptance pass. Required follow-up includes investigating the Realtek packet gaps and NZXT WASAPI discontinuities, confirming physical headphone routes, USB microphone with built-in wired output, and an independently clocked pair; each requires the separate workloads, fixture calibration, pulse accounting/statistics, stability durations, and interruption checks specified in issue #103.
+
+## Current-session hardware discovery and instrumentation limits
+
+On 2026-10-29, Windows enumeration showed the NZXT USB MIC capture/render endpoints and Realtek microphone-array/speaker endpoints. The running-app inventory showed LoopBeats, Firefox, and Notepad++; no recorder or fixture application was visible. A generic USB mass-storage device was present, but Windows exposed no mounted media on it. I did not find a synchronized two-channel fixture capture in the accessible locations. This does not establish that the owner-reported fixture is physically disconnected; its recorder and output path are simply not exposed to this session.
+
+The diagnostics implementation on branch `issue-103-native-diagnostics` adds endpoint/driver/format/period/buffer/fallback and live host counters to the integrated app, with a downloadable JSONL trace sampled by the WebView at approximately one-second intervals. Because that sampler runs in WebView JavaScript, samples can be absent during a WebView stall. It is useful during responsive intervals but does not satisfy the issue's once-per-second occupancy evidence across the required 30-second stall. The existing hardware runs above predate this instrumentation and were not made with the diagnostics UI in the binary.
+
+The effect-plus-two-track interval is not the required effect-only case. The representative-load interval records Overdubbing only at occasional UI checkpoints, so continuous active overdub during that run is unverified. Neither interval is marked as a full #103 case pass.
+## Branch diagnostics smoke
+
+- Commit under test: `290d4ca` (`issue-103-native-diagnostics`), rebuilt with `npm run tauri:dev`.
+- Route resolved by the integrated app: NZXT USB MIC capture (`{0.0.1.00000000}.{b45c7182-9207-4c3e-b8ba-f55e05c6c4ec}`) to Realtek Audio render (`{0.0.0.00000000}.{65382691-D1DF-488D-8228-A312AF984555}`), both 48 kHz Float32; 480-frame periods, 1,056-frame buffers, no fallback. Monitoring was off; no external stimulus or track playback was used, and the physical output connection was not verified.
+- Trace: [29 samples](traces/wasapi-2026-10-29T09-33-06Z.jsonl), 2026-10-29 17:33:06.698–17:33:35.084 Asia/Taipei (28.386 seconds). Sample gaps ranged from 1.000 to 1.050 seconds.
+- Capture discontinuities stayed at 1 from first to last sample; capture overflows 0; render failures 0; device-failed false. Capture queue occupancy ranged 384–1,705 of 16,384 frames; resampling correction ranged -2,689 to +2,286 ppm. The one discontinuity existed in the first sample and was classified `wasapi-reported` / `playback-continued`; this run does not identify its cause.
+- Result: diagnostics wiring and export verified on the connected endpoints. This short idle-track observation is not an acceptance-duration run, does not characterize the drift range over time, and provides no acoustic latency or fixture pulse evidence.

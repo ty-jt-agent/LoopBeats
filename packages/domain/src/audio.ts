@@ -66,6 +66,7 @@ export interface AudioSnapshot {
   readonly processedFrames: number;
   readonly inputLevel: number;
   readonly outputLevel: number;
+  readonly wasapiDiagnostics?: WasapiDiagnosticsSnapshot | null;
 }
 export type AudioCommand =
   | { type: 'set-track-gain'; trackId: TrackId; gain: number }
@@ -144,10 +145,73 @@ export type AudioEngineSnapshot = Pick<
 
 export type AudioHostSnapshot = Pick<
   AudioSnapshot,
-  'inputDeviceId' | 'status' | 'error' | 'sampleRate'
+  'inputDeviceId' | 'status' | 'error' | 'sampleRate' | 'wasapiDiagnostics'
 > & {
   readonly captureInterruption?: CaptureInterruptionSnapshot | null;
 };
+
+export interface WasapiStreamSnapshot {
+  readonly direction: 'capture' | 'render';
+  readonly endpointId: string;
+  readonly endpointName: string;
+  readonly adapterName: string;
+  readonly driver:
+    | {
+        readonly status: 'available';
+        readonly name: string;
+        readonly version: string | null;
+      }
+    | { readonly status: 'unavailable'; readonly reason: string };
+  readonly requestedSampleRate: number;
+  readonly actualSampleRate: number;
+  readonly channelCount: number;
+  readonly sampleFormat: 'Float32' | 'Signed16' | 'Signed24' | 'Signed32';
+  readonly requestedPeriodFrames: number;
+  readonly actualPeriodFrames: number;
+  readonly bufferFrames: number;
+  readonly fallback:
+    'low-period-unsupported' | 'i-audio-client3-unavailable' | null;
+}
+
+export interface WasapiDiagnosticsSnapshot {
+  readonly capture: WasapiStreamSnapshot;
+  readonly render: WasapiStreamSnapshot;
+  readonly captureDiscontinuities: number;
+  readonly captureOverflows: number;
+  readonly renderFailures: number;
+  readonly deviceFailed: boolean;
+  readonly captureQueueFrames: number;
+  readonly captureQueueCapacityFrames: number;
+  readonly captureResamplingCorrectionPpm: number;
+  readonly lastCaptureDiscontinuity:
+    | 'wasapi-reported'
+    | 'capture-packet-gap'
+    | 'capture-queue-overflow'
+    | 'render-input-underflow'
+    | 'capture-backlog-discarded'
+    | null;
+  readonly lastCaptureImpact:
+    | { readonly type: 'playback-continued' }
+    | {
+        readonly type: 'initial-recording-discarded' | 'overdub-may-be-partial';
+        readonly trackId: TrackId;
+      }
+    | null;
+}
+
+export interface WasapiDiagnosticsSample {
+  readonly timestampUtc: string;
+  readonly processedFrames: number;
+  readonly captureDiscontinuities: number;
+  readonly captureOverflows: number;
+  readonly renderFailures: number;
+  readonly deviceFailed: boolean;
+  readonly captureQueueFrames: number;
+  readonly captureQueueCapacityFrames: number;
+  readonly captureResamplingCorrectionPpm: number;
+  readonly lastCaptureDiscontinuity: WasapiDiagnosticsSnapshot['lastCaptureDiscontinuity'];
+  readonly lastCaptureImpact: WasapiDiagnosticsSnapshot['lastCaptureImpact'];
+}
 
 export interface CaptureInterruptionSnapshot {
   readonly reason:

@@ -15,6 +15,8 @@ import type {
   FxConfig,
   FxScope,
   TrackId,
+  WasapiDiagnosticsSnapshot,
+  WasapiDiagnosticsSample,
 } from '@loopbeats/domain';
 import type { WebAudioExtensions } from './web-audio-extensions';
 import { recoveryDeletionNotice } from './recovery-deletion-notice';
@@ -29,6 +31,14 @@ import { fxStateLabel } from './fx-state';
 type Removal = { kind: 'track'; trackId: TrackId } | { kind: 'session' };
 type InputDevice = { id: string; label: string };
 const SETTINGS_KEY = 'loopbeats.settings.v1';
+function captureImpactLabel(
+  impact: WasapiDiagnosticsSnapshot['lastCaptureImpact'],
+): string {
+  if (!impact) return 'None';
+  if (impact.type === 'playback-continued') return impact.type;
+  return `${impact.type} (track ${impact.trackId + 1})`;
+}
+
 type StoredSettings = {
   confirmClearing: boolean;
   preferredInputId: string | null;
@@ -220,6 +230,22 @@ export function App({
   const getRecoverySnapshot = web?.getRecoverySnapshot ?? getNoRecoverySnapshot;
   const recovery = useSyncExternalStore(recoverySubscribe, getRecoverySnapshot);
   const capabilities = audio.getCapabilities();
+  const windowsAudio = audio as AudioApplication & {
+    getWasapiDiagnosticsTrace?: () => readonly WasapiDiagnosticsSample[];
+  };
+  const diagnosticsTrace = windowsAudio.getWasapiDiagnosticsTrace?.() ?? [];
+  const downloadWasapiTrace = () => {
+    if (diagnosticsTrace.length === 0) return;
+    const contents = `${diagnosticsTrace.map((sample) => JSON.stringify(sample)).join('\n')}\n`;
+    const url = URL.createObjectURL(
+      new Blob([contents], { type: 'application/x-ndjson' }),
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `loopbeats-wasapi-${new Date().toISOString().replaceAll(':', '-')}.jsonl`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   const onFxConfigChange = useCallback(
     (scope: FxScope, config: FxConfig) => {
       if (web) {
@@ -727,16 +753,139 @@ export function App({
           <details className="session-tools">
             <summary>Diagnostics</summary>
             {ready ? (
-              <dl className="diagnostics">
-                <dt>Sample rate</dt>
-                <dd>{snapshot.sampleRate} Hz</dd>
-                <dt>Processed frames</dt>
-                <dd>{snapshot.processedFrames}</dd>
-                <dt>Input level</dt>
-                <dd>{snapshot.inputLevel.toFixed(3)}</dd>
-                <dt>Output level</dt>
-                <dd>{snapshot.outputLevel.toFixed(3)}</dd>
-              </dl>
+              <>
+                <dl className="diagnostics">
+                  <dt>Sample rate</dt>
+                  <dd>{snapshot.sampleRate} Hz</dd>
+                  <dt>Processed frames</dt>
+                  <dd>{snapshot.processedFrames}</dd>
+                  <dt>Input level</dt>
+                  <dd>{snapshot.inputLevel.toFixed(3)}</dd>
+                  <dt>Output level</dt>
+                  <dd>{snapshot.outputLevel.toFixed(3)}</dd>
+                </dl>
+                {snapshot.wasapiDiagnostics && (
+                  <>
+                    <h3>WASAPI streams</h3>
+                    {diagnosticsTrace.length > 0 && (
+                      <>
+                        <button type="button" onClick={downloadWasapiTrace}>
+                          Download WASAPI trace ({diagnosticsTrace.length}{' '}
+                          samples)
+                        </button>
+                        <p>
+                          The WebView collects this trace. Samples may be
+                          missing while the interface is stalled.
+                        </p>
+                      </>
+                    )}
+                    <dl className="diagnostics">
+                      <dt>Capture endpoint</dt>
+                      <dd>{snapshot.wasapiDiagnostics.capture.endpointName}</dd>
+                      <dt>Capture endpoint ID</dt>
+                      <dd>{snapshot.wasapiDiagnostics.capture.endpointId}</dd>
+                      <dt>Capture adapter / driver</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.capture.adapterName} /{' '}
+                        {snapshot.wasapiDiagnostics.capture.driver.status ===
+                        'available'
+                          ? `${snapshot.wasapiDiagnostics.capture.driver.name} ${snapshot.wasapiDiagnostics.capture.driver.version ?? ''}`
+                          : snapshot.wasapiDiagnostics.capture.driver.reason}
+                      </dd>
+                      <dt>Capture format</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.capture.requestedSampleRate}{' '}
+                        to {snapshot.wasapiDiagnostics.capture.actualSampleRate}{' '}
+                        Hz / {snapshot.wasapiDiagnostics.capture.sampleFormat} /{' '}
+                        {snapshot.wasapiDiagnostics.capture.channelCount} ch
+                      </dd>
+                      <dt>Capture period / buffer</dt>
+                      <dd>
+                        {
+                          snapshot.wasapiDiagnostics.capture
+                            .requestedPeriodFrames
+                        }{' '}
+                        to{' '}
+                        {snapshot.wasapiDiagnostics.capture.actualPeriodFrames}{' '}
+                        / {snapshot.wasapiDiagnostics.capture.bufferFrames}{' '}
+                        frames
+                      </dd>
+                      <dt>Capture fallback</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.capture.fallback ?? 'None'}
+                      </dd>
+                      <dt>Render endpoint</dt>
+                      <dd>{snapshot.wasapiDiagnostics.render.endpointName}</dd>
+                      <dt>Render endpoint ID</dt>
+                      <dd>{snapshot.wasapiDiagnostics.render.endpointId}</dd>
+                      <dt>Render adapter / driver</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.render.adapterName} /{' '}
+                        {snapshot.wasapiDiagnostics.render.driver.status ===
+                        'available'
+                          ? `${snapshot.wasapiDiagnostics.render.driver.name} ${snapshot.wasapiDiagnostics.render.driver.version ?? ''}`
+                          : snapshot.wasapiDiagnostics.render.driver.reason}
+                      </dd>
+                      <dt>Render format</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.render.requestedSampleRate}{' '}
+                        to {snapshot.wasapiDiagnostics.render.actualSampleRate}{' '}
+                        Hz / {snapshot.wasapiDiagnostics.render.sampleFormat} /{' '}
+                        {snapshot.wasapiDiagnostics.render.channelCount} ch
+                      </dd>
+                      <dt>Render period / buffer</dt>
+                      <dd>
+                        {
+                          snapshot.wasapiDiagnostics.render
+                            .requestedPeriodFrames
+                        }{' '}
+                        to{' '}
+                        {snapshot.wasapiDiagnostics.render.actualPeriodFrames} /{' '}
+                        {snapshot.wasapiDiagnostics.render.bufferFrames} frames
+                      </dd>
+                      <dt>Render fallback</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.render.fallback ?? 'None'}
+                      </dd>
+                      <dt>Capture discontinuities / overflows</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.captureDiscontinuities} /{' '}
+                        {snapshot.wasapiDiagnostics.captureOverflows}
+                      </dd>
+                      <dt>Render failures / device failed</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.renderFailures} /{' '}
+                        {snapshot.wasapiDiagnostics.deviceFailed ? 'yes' : 'no'}
+                      </dd>
+                      <dt>Capture queue occupancy</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.captureQueueFrames} /{' '}
+                        {snapshot.wasapiDiagnostics.captureQueueCapacityFrames}{' '}
+                        frames
+                      </dd>
+                      <dt>Capture drift correction</dt>
+                      <dd>
+                        {
+                          snapshot.wasapiDiagnostics
+                            .captureResamplingCorrectionPpm
+                        }{' '}
+                        ppm
+                      </dd>
+                      <dt>Last capture discontinuity</dt>
+                      <dd>
+                        {snapshot.wasapiDiagnostics.lastCaptureDiscontinuity ??
+                          'None'}
+                      </dd>
+                      <dt>Last capture impact</dt>
+                      <dd>
+                        {captureImpactLabel(
+                          snapshot.wasapiDiagnostics.lastCaptureImpact,
+                        )}
+                      </dd>
+                    </dl>
+                  </>
+                )}
+              </>
             ) : (
               <p>Start audio to see live diagnostics.</p>
             )}
