@@ -102,9 +102,9 @@ recorded pulse data were not provided or accessible during these runs.
 
 | Workload | Start / observed end (Asia/Taipei) | App state and result |
 | --- | --- | --- |
-| Representative load | 14:24:27–14:54:29 (30 minutes 2 seconds) | Both Loop tracks played on the shared 123,840-sample cycle; monitoring was on; the input low-pass filter was active at 611 Hz; Track 1 remained overdubbing. The processed-frame counter advanced from 45,479,616 to 132,096,096. No app-level interruption appeared during this interval. Host discontinuity counts and per-second occupancy were unavailable. |
-| Effect plus two-track playback | 14:54:49–15:24:53 (30 minutes 4 seconds) | Both Loop tracks played; monitoring and the 611 Hz input low-pass filter were on; no track was overdubbing. The app remained ready and reported no interruption. Host discontinuity counts and per-second occupancy were unavailable. |
-| Monitoring-only passthrough | 15:25:33–15:55:44 (30 minutes 11 seconds) | Monitoring remained on; both tracks and transport were stopped; the input low-pass filter was bypassed. The app remained ready and reported no interruption. The physical input/output route was not identified or independently verified. |
+| Representative load | 14:24:27–14:54:29 (30 minutes 2 seconds) | Both Loop tracks played on the shared 123,840-sample cycle; monitoring was on; the input low-pass filter was active at 611 Hz; Track 1 was overdubbing at each approximately 40–50 second UI checkpoint. No UI commands were sent during the interval. The processed-frame counter advanced from 45,479,616 to 132,096,096. No app-level interruption appeared. Host discontinuity counts and per-second occupancy were unavailable. |
+| Effect plus two-track playback | 14:54:49–15:24:53 (30 minutes 4 seconds) | Both Loop tracks played; monitoring and the 611 Hz input low-pass filter were on; no track was overdubbing. The app remained ready at approximately 40–50 second UI checkpoints and reported no interruption. Host discontinuity counts and per-second occupancy were unavailable. |
+| Monitoring-only passthrough | 15:25:33–15:55:44 (30 minutes 11 seconds) | Monitoring remained on; both tracks and transport were stopped; the input low-pass filter was bypassed. The app remained ready at approximately 40–50 second UI checkpoints and reported no interruption. The physical input/output route was not identified or independently verified. |
 
 ### Capture interruption during representative load
 
