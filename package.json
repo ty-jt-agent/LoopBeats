@@ -22,7 +22,7 @@
     "check:web": "npm run typecheck:web && npm run lint:web && npm run format:check:web && npm run test:web",
     "typecheck:windows": "tsc --noEmit -p apps/windows/tsconfig.json",
     "lint:windows": "eslint apps/windows --max-warnings 0",
-    "format:check:windows": "prettier --check apps/windows",
+    "format:check:windows": "prettier --check --end-of-line auto apps/windows",
     "test:windows": "vitest run apps/windows",
     "check:windows": "npm run typecheck:windows && npm run lint:windows && npm run format:check:windows && npm run test:windows",
     "typecheck": "tsc --noEmit",
